@@ -3,6 +3,8 @@ from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+import os
+
 
 def generate_key_pair():
     # Generate an RSA key pair
@@ -130,3 +132,26 @@ def hash_string(message):
     digest = hashes.Hash(hashes.SHA256())
     digest.update(message.encode())
     return digest.finalize()
+
+
+def generate_nonce():
+    return os.urandom(16)
+
+
+def send_data(data, socket):
+    nonce = generate_nonce()
+    m = data + nonce
+    hashed_data = hash_string(m)
+    signature = sign_message_with_private_key(hashed_data, load_private_key())
+    socket.sendall(m.encode())
+    socket.sendall(signature.encode())
+
+
+def receive_data(socket):
+    data = socket.recv(1024)
+    signature = socket.recv(1024)
+    hashed_data = hash_string(data)
+    if verify_signature_with_public_key(signature, hashed_data, load_public_key()):
+        return data
+    else:
+        return None

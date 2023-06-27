@@ -32,7 +32,7 @@ def handle_client(client_socket, public_key,  private_key):
 
         if command == 'exit':
             break
-        elif command == 'sign up':
+        elif command == 'su':
             sign_up(client_socket, public_key,  private_key)
 
     client_socket.close()
