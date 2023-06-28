@@ -7,9 +7,12 @@ from cryptography.hazmat.primitives import serialization, hashes
 
 def sign_up(client_socket, public_key,  private_key):
     username = client_socket.recv(1024).decode()
-    password = client_socket.recv(1024).decode()
 
     client_public_key = client_socket.recv(1024).decode()
+
+    password = client_socket.recv(1024).decode()
+    password = utils.decrypt_message_with_private_key(
+        password, utils.load_private_key())
 
     # decrypt password
     decrypted_password = utils.decrypt_message_with_private_key(
@@ -32,7 +35,7 @@ def handle_client(client_socket, public_key,  private_key):
 
         if command == 'exit':
             break
-        elif command == 'sign up':
+        elif command == 'su':
             sign_up(client_socket, public_key,  private_key)
 
     client_socket.close()
