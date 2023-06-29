@@ -6,6 +6,8 @@ name = "pypi"
 [packages]
 django = "*"
 channels = {extras = ["daphne"], version = "*"}
+django-cryptography = "*"
+django-environ = "*"
 
 [dev-packages]
 

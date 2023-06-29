@@ -1,3 +1,5 @@
 /.idea
 /*/db.sqlite3
 /Pipfile.lock
+/client/cli/migrations/
+/server/connections/migrations/
