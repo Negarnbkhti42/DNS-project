@@ -14,7 +14,6 @@ class _CLI:
     @staticmethod
     async def main_page():
         options = ["Sign up", "Login", "Exit"]
-        choices = [str(i + 1) for i in range(len(options))]
         while True:
             print("Welcome to the chat app!")
             print("Please select an option:")
@@ -22,8 +21,36 @@ class _CLI:
                 print(f"{i + 1}. {options[i]}")
             choice = input("Enter your choice: ").replace(" ", "")
             # check if choice is number and in range of options and the return the choice
-            if choice in choices:
+            if choice > 0 and choice <= len(options):
                 return options[int(choice) - 1]
+
+    @staticmethod
+    async def user_page():
+        options = [
+            "get online users",
+            "get groups",
+            "start chat",
+            "create group",
+            "enter group",
+        ]
+
+        while True:
+            print("Please select an option:")
+            for i in range(len(options)):
+                print(f"{i + 1}. {options[i]}")
+            choice = input("Enter your choice: ").replace(" ", "")
+            # check if choice is number and in range of options and the return the choice
+            if choice > 0 and choice <= len(options):
+                return options[int(choice) - 1]
+
+    @staticmethod
+    async def chat_page():
+        print("to exit chat, enter 'exit'")
+
+    @staticmethod
+    async def group_create_page():
+        name = input("Enter group name: ")
+        return name
 
     @staticmethod
     async def signup():
@@ -251,11 +278,9 @@ class Command(BaseCommand):
                 )
             )
 
-    def load_private_key(self, asByte: bool = False):
+    def load_private_key(self):
         # Load the private key
         with open("client_private_key.pem", "rb") as private_key_file:
-            if asByte:
-                return private_key_file.read()
             return serialization.load_pem_private_key(
                 private_key_file.read(), password=b"mypassword"
             )
