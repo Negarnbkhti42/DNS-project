@@ -20,29 +20,26 @@ class Command(BaseCommand):
 async def signup(server_public_key):
     uri = "http://localhost:8000/"  # Replace with your server's websocket URL
     async with websockets.connect(uri) as websocket:
-        username = input("Enter username: ")
-        password = input("Enter password: ")
-        public_key = load_public_key()
-        # encrypt password with server public key
-        encrypted_pass = encrypt_message_with_public_key(password, server_public_key)
+        message = {}
+        message["operation"] = "SU"
+        message["username"] = input("Enter username: ")
 
-        # hash and sign whole data with client private key
+        password = input("Enter password: ")
+
+        public_key = load_public_key()
+        message["public_key"] = public_key
+
+        message["encrypted_password"] = encrypt_message_with_public_key(
+            password, server_public_key
+        )
+
         signature = sign_message_with_private_key(
-            hash_string(username + public_key + encrypted_pass), load_private_key()
+            hash_string(json.dumps(message)), load_private_key()
         )
 
         # Send the sign-up request
-        await websocket.send(
-            json.dumps(
-                {
-                    "operation": "SU",
-                    "username": username,
-                    "public_key": public_key,
-                    "encrypted_password": encrypted_pass,
-                    "signature": signature,
-                }
-            )
-        )
+        message["signature"] = signature
+        await websocket.send(json.dumps(message))
 
         # Wait for the response
         response = await websocket.recv()
@@ -50,37 +47,71 @@ async def signup(server_public_key):
         verify = verify_signature_with_public_key(
             response_dict["signature"], response_dict["message"], server_public_key
         )
-        print(verify)
+
+        return verify
 
 
-async def login():
+async def login(server_public_key):
     uri = "http://localhost:8000/"  # Replace with your server's websocket URL
     async with websockets.connect(uri) as websocket:
-        username = input("Enter username: ")
+        message = {}
+        message["operation"] = "NK"
+        message["username"] = input("Enter username: ")
+
         password = input("Enter password: ")
-        public_key = 0  # generate public key
-        # encrypt password with server public key
-        nonce = 0  # generate nonce
-        encrypted_pass_and_nonce = 0
+
+        public_key = load_public_key()
+        message["public_key"] = public_key
+
+        nonce = generate_nonce()  # generate nonce
+        message["encrypted_password_and_nonce"] = encrypt_message_with_public_key(
+            json.dumps({"password": password, "nonce": nonce}), server_public_key
+        )
 
         # hash and sign whole data with client private key
-        signature = ""
+        signature = sign_message_with_private_key(
+            hash_string(message),
+            load_private_key(),
+        )
+
+        message["signature"] = signature
 
         # Send the login request
-        await websocket.send(
-            json.dumps(
-                {
-                    "operation": "NK",
-                    "username": username,
-                    "public_key": public_key,
-                    "encrypted_password_and_nonce": encrypted_pass_and_nonce,
-                    "signature": signature,
-                }
-            )
-        )
+        await websocket.send(json.dumps(message))
 
         # Wait for the response
         response = await websocket.recv()
+        response_dict = json.loads(response)
+
+        if nonce != response_dict["nonce"]:
+            print("Nonce is not equal")
+            return False
+
+        verify = verify_signature_with_public_key(
+            response_dict["signature"],
+            json.dumps(
+                {"nonce": response_dict["nonce"], "nonce2": response_dict["nonce2"]}
+            ),
+            server_public_key,
+        )
+
+        if not verify:
+            return False
+
+        message = {}
+
+        message["encrypted_password_nonce"] = encrypt_message_with_public_key(
+            json.dumps({"password": password, "nonce2": response_dict["nonce2"]}),
+            server_public_key,
+        )
+
+        signature = sign_message_with_private_key(
+            hash_string(message), load_private_key()
+        )
+        message["signature"] = signature
+
+        await websocket.send(json.dumps(message))
+
         print(f"Response: {response}")
 
 
