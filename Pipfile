@@ -9,6 +9,7 @@ channels = {extras = ["daphne"], version = "*"}
 django-cryptography = "*"
 django-environ = "*"
 websockets = "*"
+websocket-client = "*"
 
 [dev-packages]
 
