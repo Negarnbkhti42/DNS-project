@@ -7,7 +7,8 @@ import json
 
 
 class Command(BaseCommand):
-    help = "Closes the specified poll for voting"
+    help
+    "Closes the specified poll for voting"
 
     def handle(self, *args, **options):
         pass
