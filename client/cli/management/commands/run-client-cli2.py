@@ -5,6 +5,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric import rsa
 import asyncio
 import websockets
+from websockets.sync.client import connect
 import json
 import os
 
@@ -57,27 +58,27 @@ class Command(BaseCommand):
 
     async def server_start_point(self):
         server_address = self.server_address + "socket-server/"
-        async with websockets.connect(server_address) as ws:
+        with connect(server_address) as ws:
             while not self.terminate_event.is_set():
-                server_message = await ws.recv()
+                server_message = ws.recv()
                 print("Received from server:", server_message)
 
                 # Check if the server message indicates the start of a conversation
                 if server_message == "Start conversation":
                     # Add an action to the queue to indicate the start of the conversation
-                    await self.action_queue.put("start_conversation")
+                    self.action_queue.put("start_conversation")
 
     async def client_start_point(self):
         server_address = self.server_address + "socket-client/"
-        async with websockets.connect(server_address) as ws:
+        with connect(server_address) as ws:
             while not self.terminate_event.is_set():
                 # Wait for an action in the queue
-                action = await self.action_queue.get()
+                action = self.action_queue.get()
 
                 if action == "start_conversation":
                     # Start a conversation with the server
-                    await ws.send("Hello, server! Let's start the conversation.")
-                    response = await ws.recv()
+                    ws.send("Hello, server! Let's start the conversation.")
+                    response = ws.recv()
                     print("Received from server:", response)
 
     async def interact_with_user(self):
@@ -191,6 +192,36 @@ class Command(BaseCommand):
         await websocket.send(json.dumps(message))
 
         print(f"Response: {response}")
+
+    async def send_request(self, request: str, server_public_key: str, websocket):
+        message = {}
+        message["operation"] = request
+        message["nonce"] = self.generate_nonce()
+        signature = self.sign_message_with_private_key(
+            self.hash_string(request + message["nonce"]), self.load_private_key()
+        )
+        message["signature"] = signature
+
+        websocket.send(json.dumps(message))
+
+        response = websocket.recv()
+        response_dict = json.loads(response)
+
+        if response_dict["nonce"] != message["nonce"]:
+            return None
+
+        verify = self.verify_signature_with_public_key(
+            response_dict["signature"],
+            response_dict["answer"] + response_dict["nonce"] + response_dict["nonce2"],
+            server_public_key,
+        )
+
+        if verify:
+            return response_dict["answer"]
+
+        return None
+
+    # utility functions
 
     def generate_key_pair(self):
         # Generate an RSA key pair
