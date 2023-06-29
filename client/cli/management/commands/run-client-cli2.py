@@ -58,7 +58,7 @@ class Command(BaseCommand):
 
     async def server_start_point(self):
         server_address = self.server_address + "socket-server/"
-        with connect(server_address) as ws:
+        async with websockets.connect(server_address) as ws:
             while not self.terminate_event.is_set():
                 server_message = ws.recv()
                 print("Received from server:", server_message)
@@ -70,7 +70,7 @@ class Command(BaseCommand):
 
     async def client_start_point(self):
         server_address = self.server_address + "socket-client/"
-        with connect(server_address) as ws:
+        async with websockets.connect(server_address) as ws:
             while not self.terminate_event.is_set():
                 # Wait for an action in the queue
                 action = self.action_queue.get()
@@ -202,9 +202,9 @@ class Command(BaseCommand):
         )
         message["signature"] = signature
 
-        websocket.send(json.dumps(message))
+        await websocket.send(json.dumps(message))
 
-        response = websocket.recv()
+        response = await websocket.recv()
         response_dict = json.loads(response)
 
         if response_dict["nonce"] != message["nonce"]:
