@@ -1,10 +1,10 @@
 from django.db import models
-from django_cryptography.fields import encrypt
+from fernet_fields import EncryptedCharField
 
 
 class User(models.Model):
     username = models.CharField(max_length=50, primary_key=True)
-    password = encrypt(models.CharField(max_length=50))
+    password = EncryptedCharField(max_length=50)
     public_key = models.TextField(null=True)
     online = models.BooleanField()
     logged_in = models.BooleanField()

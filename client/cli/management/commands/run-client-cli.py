@@ -121,7 +121,7 @@ def generate_key_pair():
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
     # Save the private key
-    with open("client_private_key.pem", "wb") as private_key_file:
+    with open("server_private_key.pem", "wb") as private_key_file:
         private_key_file.write(
             private_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
@@ -136,7 +136,7 @@ def generate_key_pair():
     public_key = private_key.public_key()
 
     # Save the public key
-    with open("client_public_key.pem", "wb") as public_key_file:
+    with open("server_public_key.pem", "wb") as public_key_file:
         public_key_file.write(
             public_key.public_bytes(
                 encoding=serialization.Encoding.PEM,
@@ -147,7 +147,7 @@ def generate_key_pair():
 
 def load_private_key():
     # Load the private key
-    with open("client_private_key.pem", "rb") as private_key_file:
+    with open("server_private_key.pem", "rb") as private_key_file:
         return serialization.load_pem_private_key(
             private_key_file.read(), password=b"mypassword"
         )
@@ -155,7 +155,7 @@ def load_private_key():
 
 def load_public_key():
     # Load the public key
-    with open("client_public_key.pem", "rb") as public_key_file:
+    with open("server_public_key.pem", "rb") as public_key_file:
         return serialization.load_pem_public_key(public_key_file.read())
 
 

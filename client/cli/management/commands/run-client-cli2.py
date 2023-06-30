@@ -1,74 +1,219 @@
+import sys
+
+from cryptography.hazmat.backends import default_backend
 from django.core.management.base import BaseCommand
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric import padding, dh
 from cryptography.hazmat.primitives.asymmetric import rsa
 import asyncio
 import websockets
 from websockets.sync.client import connect
 import json
 import os
+from cli.models import *
+from channels.db import database_sync_to_async
+from asgiref.sync import sync_to_async
 
 
-class _CLI:
+
+class Utils:
     @staticmethod
-    async def main_page():
-        options = ["Sign up", "Login", "Exit"]
-        while True:
-            print("Welcome to the chat app!")
-            print("Please select an option:")
-            for i in range(len(options)):
-                print(f"{i + 1}. {options[i]}")
-            choice = input("Enter your choice: ").replace(" ", "")
-            # check if choice is number and in range of options and the return the choice
-            if choice > 0 and choice <= len(options):
-                return options[int(choice) - 1]
+    def generate_rsa_key_pair():
+        # Generate an RSA key pair
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        return {"private_key": Utils._serialize_private_key(private_key),
+                "public_key": Utils._serialize_public_key(private_key.public_key())}
 
     @staticmethod
-    async def user_page():
-        options = [
-            "get online users",
-            "get groups",
-            "start chat",
-            "create group",
-            "enter group",
-        ]
-
-        while True:
-            print("Please select an option:")
-            for i in range(len(options)):
-                print(f"{i + 1}. {options[i]}")
-            choice = input("Enter your choice: ").replace(" ", "")
-            # check if choice is number and in range of options and the return the choice
-            if choice > 0 and choice <= len(options):
-                return options[int(choice) - 1]
+    def _serialize_public_key(public_key):
+        return Utils._byte_to_string(public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ))
 
     @staticmethod
-    async def chat_page():
-        print("to exit chat, enter 'exit'")
+    def _serialize_private_key(private_key):
+        # no encryption
+        return Utils._byte_to_string(private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ))
 
     @staticmethod
-    async def group_create_page():
-        name = input("Enter group name: ")
-        return name
+    def _load_private_key(serialized_private_key):
+        return serialization.load_pem_private_key(
+            Utils._string_to_byte(serialized_private_key),
+            password=None,
+        )
 
     @staticmethod
-    async def signup():
-        Username = input("Enter username:")
-        password = input("enter password:")
+    def _load_public_key(serialized_public_key):
+        return serialization.load_pem_public_key(Utils._string_to_byte(serialized_public_key))
 
     @staticmethod
-    async def login():
-        username = input("Enter username: ")
-        password = input("Enter password: ")
+    def load_server_public_key():
+        with open("server_public_key.pem", "rb") as public_key_file:
+            return Utils._byte_to_string(public_key_file.read())
+
+    @staticmethod
+    def generate_symmetric_key():
+        key = Fernet.generate_key()
+        return Utils._byte_to_string(key)
+
+    @staticmethod
+    def encrypt_message_with_public_key(message, public_key):
+        encrypted_message = Utils._load_public_key(public_key).encrypt(
+            Utils._string_to_byte(message),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+        return Utils._byte_to_string(encrypted_message)
+
+    @staticmethod
+    def decrypt_message_with_private_key(encrypted_message, private_key):
+        decrypted_message = Utils._load_private_key(private_key).decrypt(
+            encrypted_message,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+        return Utils._byte_to_string(decrypted_message)
+
+    @staticmethod
+    def sign_message_with_private_key(message, private_key):
+        signature = Utils._load_private_key(private_key).sign(
+            Utils._string_to_byte(message),
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH
+            ),
+            hashes.SHA256(),
+        )
+        return Utils._byte_to_string(signature)
+
+    @staticmethod
+    def verify_signature_with_public_key(signature, message, public_key):
+        try:
+            public_key.verify(
+                signature,
+                Utils._string_to_byte(message),
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH,
+                ),
+                hashes.SHA256(),
+            )
+            return True
+        except:
+            return False
+
+    @staticmethod
+    def encrypt_message_with_symmetric_key(message, symmetric_key):
+        cipher_suite = Fernet(Utils._string_to_byte(symmetric_key))
+        encrypted_message = cipher_suite.encrypt(Utils._string_to_byte(message))
+        return Utils._byte_to_string(encrypted_message)
+
+    @staticmethod
+    def decrypt_message_with_symmetric_key(encrypted_message, symmetric_key):
+        cipher_suite = Fernet(Utils._string_to_byte(symmetric_key))
+        decrypted_message = cipher_suite.decrypt(encrypted_message)
+        return Utils._byte_to_string(decrypted_message)
+
+    @staticmethod
+    def hash_string(message):
+        digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
+        digest.update(Utils._string_to_byte(message))
+        return Utils._byte_to_string(digest.finalize())
+
+    @staticmethod
+    def generate_nonce():
+        return Utils._byte_to_string(os.urandom(16))
+
+    @staticmethod
+    def generate_diffie_hellman_parameters():
+        shared_parameters = dh.generate_parameters(generator=2, key_size=2048, backend=default_backend())
+        public_key = shared_parameters.generate_private_key()
+        private_key = shared_parameters.generate_private_key()
+        return {"shared_parameters": Utils._serialize_diffie_hellman_shared_parameters(shared_parameters),
+                "public_key": Utils._serialize_diffie_hellman_public_key(public_key),
+                "private_key": Utils._serialize_diffie_hellman_private_key(private_key)}
+
+    @staticmethod
+    def _serialize_diffie_hellman_public_key(public_key):
+        return Utils._byte_to_string(public_key.public_bytes(encoding=serialization.Encoding.PEM,
+                                                             format=serialization.PublicFormat.SubjectPublicKeyInfo))
+
+    @staticmethod
+    def _load_diffie_hellman_public_key(public_key):
+        return serialization.load_pem_public_key(public_key)
+
+    @staticmethod
+    def _serialize_diffie_hellman_private_key(private_key):
+        return Utils._byte_to_string(private_key.private_bytes(encoding=serialization.Encoding.PEM,
+                                                               format=serialization.PrivateFormat.PKCS8,
+                                                               encryption_algorithm=serialization.NoEncryption()))
+
+    @staticmethod
+    def _load_diffie_hellman_private_key(serialized_private_key):
+        return serialization.load_pem_private_key(Utils._string_to_byte(serialized_private_key), password=None)
+
+    @staticmethod
+    def _serialize_diffie_hellman_shared_parameters(shared_parameters):
+        return Utils._byte_to_string(shared_parameters.parameter_bytes(encoding=serialization.Encoding.PEM,
+                                                                       format=serialization.ParameterFormat.PKCS3))
+
+    @staticmethod
+    def _load_diffie_hellman_shared_parameters(serialized_shared_parameters):
+        return serialization.load_pem_parameters(Utils._string_to_byte(serialized_shared_parameters))
+
+    @staticmethod
+    def _byte_to_string(byte):
+        return byte.decode("utf-8")
+
+    @staticmethod
+    def _string_to_byte(string):
+        return string.encode("utf-8")
+
+    @staticmethod
+    def sign_json_message_with_private_key(message, private_key):
+        signature = Utils.sign_message_with_private_key(
+            "".join([value for key, value in sorted(message.items(), key=lambda t: t[0])]),
+            private_key,
+        )
+        message = message | {"signature": signature}
+        return message
+
+    @staticmethod
+    def verify_signature_on_json_message(message, public_key):
+        public_key_object = Utils._load_public_key(public_key)
+        try:
+            signature = message.pop("signature")
+            return Utils.verify_signature_with_public_key(
+                signature,
+                Utils.hash_string(
+                    "".join([value for key, value in sorted(message.items(), key=lambda t: t[0])])
+                ),
+                public_key_object,
+            )
+        except:
+            return False
 
 
 class Command(BaseCommand):
     help = "Closes the specified poll for voting"
 
     server_address = "ws://localhost:8000/ws/"
-    action_queue = asyncio.Queue()
+    server_start_point_queue = asyncio.Queue()
     terminate_event = asyncio.Event()
+    client_ws = None
+    server_ws = None
+    client_section = "Check Logged In Section"
 
     def handle(self, *args, **options):
         try:
@@ -80,46 +225,107 @@ class Command(BaseCommand):
         await asyncio.gather(
             self.server_start_point(),
             self.client_start_point(),
-            self.interact_with_user(),
         )
+
+    async def send_json_client_ws(self, json_data):
+        await self.client_ws.send(json.dumps(json_data))
+
+    async def receive_json_client_ws(self):
+        return json.loads(await self.client_ws.recv())
+    async def send_json_server_ws(self, json_data):
+        await self.server_ws.send(json.dumps(json_data))
+
+    async def receive_json_server_ws(self):
+        return json.loads(await self.server_ws.recv())
 
     async def server_start_point(self):
         server_address = self.server_address + "socket-server/"
         async with websockets.connect(server_address) as ws:
+            self.server_ws = ws
             while not self.terminate_event.is_set():
-                server_message = ws.recv()
-                print("Received from server:", server_message)
-
-                # Check if the server message indicates the start of a conversation
-                if server_message == "Start conversation":
-                    # Add an action to the queue to indicate the start of the conversation
-                    self.action_queue.put("start_conversation")
+                break
 
     async def client_start_point(self):
         server_address = self.server_address + "socket-client/"
         async with websockets.connect(server_address) as ws:
+            self.client_ws = ws
             while not self.terminate_event.is_set():
-                # Wait for an action in the queue
-                action = self.action_queue.get()
+                if self.client_section == "Check Logged In Section":
+                    await self.check_logged_in_section()
+                elif self.client_section == "Pre Login Page":
+                    await self.pre_login_page()
+                elif self.client_section == "Login Page":
+                    await self.login_page()
+                elif self.client_section == "Sign Up Page":
+                    await self.sign_up_page()
 
-                if action == "start_conversation":
-                    # Start a conversation with the server
-                    ws.send("Hello, server! Let's start the conversation.")
-                    response = ws.recv()
-                    print("Received from server:", response)
+    @database_sync_to_async
+    def check_logged_in_section(self):
+        logged_in = User.objects.filter(is_me=True).exists()
+        if logged_in:
+            self.client_section = "Main Page"
+        else:
+            self.client_section = "Pre Login Page"
 
-    async def interact_with_user(self):
-        while not self.terminate_event.is_set():
-            user_input = input("Enter an action: ")
-            # Store the action in the queue
-            await self.action_queue.put(user_input)
+    async def pre_login_page(self):
+        choices = ["Login Page", "Sign Up Page"]
+        options = [str(i + 1) for i in range(len(choices))]
+        while True:
+            print("Choose an option:")
+            for i in range(len(choices)):
+                print("{}. {}".format(i + 1, choices[i]))
+            choice = input("Enter your choice: ")
+            if choice in options:
+                self.client_section = choices[int(choice) - 1]
+            else:
+                print("Invalid choice. Try again.")
+
+    async def login_page(self):
+        try:
+            while True:
+                username = input("Enter your username: ")
+                password = input("Enter your password: ")
+                if username and password and " " not in username and " " not in password:
+                    result = await self.login(username, password)
+                    if result["status"] == "success":
+                        self.client_section = "Main Page"
+                        break
+                    if result["status"] == "failed":
+                        print("Wrong Username or Password. Try again.")
+                    if result["status"] == "error":
+                        print("Server Error. Try again.")
+                        # decrease trust level
+                else:
+                    print("Invalid input. Try again.")
+        except KeyboardInterrupt:
+            self.client_section = "Pre Login Page"
+
+    async def sign_up_page(self):
+        try:
+            while True:
+                username = input("Enter your username: ")
+                password = input("Enter your password: ")
+                if username and password and " " not in username and " " not in password:
+                    result = await self.signup(username, password)
+                    if result["status"] == "success":
+                        self.client_section = "Main Page"
+                        break
+                    if result["status"] == "failed":
+                        print("Username already exists. Try again.")
+                    if result["status"] == "error":
+                        print("Server Error. Try again.")
+                        # decrease trust level
+                else:
+                    print("Invalid input. Try again.")
+        except KeyboardInterrupt:
+            self.client_section = "Pre Login Page"
+
+
 
     async def signup(
         self,
         username: str,
         password: str,
-        server_public_key: rsa.RSAPublicKeyWithSerialization,
-        websocket,
     ):
         message = {}
         message["operation"] = "SU"
@@ -156,69 +362,54 @@ class Command(BaseCommand):
         self,
         username,
         password,
-        server_public_key: rsa.RSAPublicKeyWithSerialization,
-        websocket,
     ):
-        message = {}
-        message["operation"] = "NK"
-        message["username"] = username
+        new_rsa_key_pair = Utils.generate_rsa_key_pair()
+        server_public_key = Utils.load_server_public_key()
 
-        public_key = self.load_public_key(asByte=True)
-        message["public_key"] = public_key
+        nonce = Utils.generate_nonce()
+        m = json.dumps({"nonce": nonce, "password": password})
+        encrypted_m = Utils.encrypt_message_with_public_key(m, server_public_key)
+        m2 = {"operation": "NK",
+              "username": username,
+              "public_key": new_rsa_key_pair['public_key'],
+              "encrypted_password_and_nonce": encrypted_m}
+        message = Utils.sign_json_message_with_private_key(m2, new_rsa_key_pair['private_key'])
+        await self.send_json_client_ws(message)
 
-        nonce = self.generate_nonce()  # generate nonce
-        message["encrypted_password_and_nonce"] = self.encrypt_message_with_public_key(
-            json.dumps({"password": password, "nonce": nonce}), server_public_key
-        )
+        response = await self.receive_json_client_ws()
+        verified = Utils.verify_signature_on_json_message(response, server_public_key)
+        if not verified:
+            return {"status": "error"}
+        nonce_2 = response['nonce']
+        nonce2_2 = response['nonce2']
+        status_2 = response['status']
+        if nonce != nonce_2:
+            return {"status": "error"}
+        if status_2 == "failed":
+            return {"status": "failed"}
+        if status_2 != "success":
+            return {"status": "error"}
 
-        # hash and sign whole data with client private key
-        signature = self.sign_message_with_private_key(
-            self.hash_string(
-                "NK" + username + public_key + message["encrypted_password_and_nonce"]
-            ),
-            self.load_private_key(),
-        )
+        m_3 = json.dumps({
+            "password": password,
+            "nonce2": nonce2_2,
+        })
 
-        message["signature"] = signature
+        m2_3 = Utils.encrypt_message_with_public_key(m_3, server_public_key)
+        message_3 = Utils.sign_json_message_with_private_key(m2_3, new_rsa_key_pair['private_key'])
+        await self.send_json_client_ws(message_3)
 
-        # Send the login request
-        await websocket.send(json.dumps(message))
+        @sync_to_async(thread_sensitive=True)
+        def update_user():
+            user = User.objects.get_or_create(username=username)
+            user.password = password
+            user.public_key = new_rsa_key_pair['public_key']
+            user.private_key = new_rsa_key_pair['private_key']
+            user.is_me = True
+            user.save()
+        await update_user()
 
-        # Wait for the response
-        response = await websocket.recv()
-        response_dict = json.loads(response)
-
-        if nonce != response_dict["nonce"]:
-            print("Nonce is not equal")
-            return False
-
-        verify = self.verify_signature_with_public_key(
-            response_dict["signature"],
-            json.dumps(
-                {"nonce": response_dict["nonce"], "nonce2": response_dict["nonce2"]}
-            ),
-            server_public_key,
-        )
-
-        if not verify:
-            return False
-
-        message = {}
-
-        message["encrypted_password_nonce"] = self.encrypt_message_with_public_key(
-            json.dumps({"password": password, "nonce2": response_dict["nonce2"]}),
-            server_public_key,
-        )
-
-        signature = self.sign_message_with_private_key(
-            self.hash_string(password + response_dict["nonce2"]),
-            self.load_private_key(),
-        )
-        message["signature"] = signature
-
-        await websocket.send(json.dumps(message))
-
-        print(f"Response: {response}")
+        return {"status": "success"}
 
     async def send_request(self, request: str, server_public_key: str, websocket):
         message = {}
@@ -247,140 +438,3 @@ class Command(BaseCommand):
             return response_dict["answer"]
 
         return None
-
-    # utility functions
-
-    def generate_key_pair(self):
-        # Generate an RSA key pair
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-        # Save the private key
-        with open("client_private_key.pem", "wb") as private_key_file:
-            private_key_file.write(
-                private_key.private_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.PKCS8,
-                    encryption_algorithm=serialization.BestAvailableEncryption(
-                        b"mypassword"
-                    ),
-                )
-            )
-
-        # Get the corresponding public key
-        public_key = private_key.public_key()
-
-        # Save the public key
-        with open("client_public_key.pem", "wb") as public_key_file:
-            public_key_file.write(
-                public_key.public_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PublicFormat.SubjectPublicKeyInfo,
-                )
-            )
-
-    def load_private_key(self):
-        # Load the private key
-        with open("client_private_key.pem", "rb") as private_key_file:
-            return serialization.load_pem_private_key(
-                private_key_file.read(), password=b"mypassword"
-            )
-
-    def load_public_key(self, asByte: bool = False):
-        # Load the public key
-        with open("client_public_key.pem", "rb") as public_key_file:
-            if asByte:
-                return public_key_file.read()
-            return serialization.load_pem_public_key(public_key_file.read())
-
-    def generate_key(self):
-        # Generate a new encryption key
-        key = Fernet.generate_key()
-        with open("key.key", "wb") as key_file:
-            key_file.write(key)
-
-    def load_key(self):
-        # Load the encryption key
-        with open("key.key", "rb") as key_file:
-            return key_file.read()
-
-    def encrypt_message_with_public_key(self, message, public_key):
-        encrypted_message = public_key.encrypt(
-            message.encode(),
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None,
-            ),
-        )
-        return encrypted_message
-
-    def decrypt_message_with_private_key(self, encrypted_message, private_key):
-        decrypted_message = private_key.decrypt(
-            encrypted_message,
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None,
-            ),
-        )
-        return decrypted_message.decode()
-
-    def sign_message_with_private_key(self, message, private_key):
-        signature = private_key.sign(
-            message.encode(),
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH
-            ),
-            hashes.SHA256(),
-        )
-        return signature
-
-    def verify_signature_with_public_key(self, signature, message, public_key):
-        try:
-            public_key.verify(
-                signature,
-                message.encode(),
-                padding.PSS(
-                    mgf=padding.MGF1(hashes.SHA256()),
-                    salt_length=padding.PSS.MAX_LENGTH,
-                ),
-                hashes.SHA256(),
-            )
-            return True
-        except:
-            return False
-
-    def encrypt_message_with_symmetric_key(self, message, symmetric_key):
-        cipher_suite = Fernet(symmetric_key)
-        encrypted_message = cipher_suite.encrypt(message.encode())
-        return encrypted_message
-
-    def decrypt_message_with_symmetric_key(self, encrypted_message, symmetric_key):
-        cipher_suite = Fernet(symmetric_key)
-        decrypted_message = cipher_suite.decrypt(encrypted_message)
-        return decrypted_message.decode()
-
-    def hash_string(self, message):
-        digest = hashes.Hash(hashes.SHA256())
-        digest.update(message.encode())
-        return digest.finalize()
-
-    def generate_nonce(self):
-        return os.urandom(16)
-
-    # def send_data(self, data, socket):
-    #     nonce = generate_nonce()
-    #     m = data + nonce
-    #     hashed_data = hash_string(m)
-    #     signature = sign_message_with_private_key(hashed_data, load_private_key())
-    #     socket.sendall(m.encode())
-    #     socket.sendall(signature.encode())
-
-    # def receive_data(self, socket):
-    #     data = socket.recv(1024)
-    #     signature = socket.recv(1024)
-    #     hashed_data = hash_string(data)
-    #     if verify_signature_with_public_key(signature, hashed_data, load_public_key()):
-    #         return data
-    #     else:
-    #         return None

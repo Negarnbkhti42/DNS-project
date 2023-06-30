@@ -8,17 +8,26 @@ import websockets
 from websockets.sync.client import connect
 import json
 import os
+from connections.models import *
 
-from models import User
+
+class Utils:
+    @staticmethod
+    def load_server_private_key():
+        # Load the private key
+        with open("server_private_key.pem", "rb") as private_key_file:
+            return serialization.load_pem_private_key(
+                private_key_file.read(), password=b"mypassword"
+            )
 
 
 class ServerStartPointConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         await self.accept()
-        await self.send("Hello world!")
-        message = await self.receive()
-        print(message)
-        await self.send("ho ho ho!")
+        # await self.send("Hello world!")
+        # message = await self.receive()
+        # print(message)
+        # await self.send("ho ho ho!")
 
 
 class ClientStartPointConsumer(AsyncWebsocketConsumer):
