@@ -493,30 +493,42 @@ class Command(BaseCommand):
 
         return {"status": "success"}
 
-    async def send_request(self, request: str, server_public_key: str, websocket):
-        message = {}
-        message["operation"] = request
-        message["nonce"] = self.generate_nonce()
-        signature = self.sign_message_with_private_key(
-            self.hash_string(request + message["nonce"]), self.load_private_key()
+    async def send_request(self, request: str, exceepts_answer: bool):
+        user = self.get_my_user()
+        username = user.username
+        server_public_key = Utils.load_server_public_key()
+        private_key = user.private_key
+        nonce = Utils.generate_nonce()
+        m = {}
+        if exceepts_answer:
+            m = {"username": username, "operation": request, "nonce": nonce}
+        else:
+            m = {"operation": request, "nonce": nonce}
+
+        message = Utils.sign_json_message_with_private_key(m, private_key)
+
+        await self.send_json_client_ws(message)
+
+        response = await self.receive_json_client_ws()
+
+        verified = Utils.verify_signature_on_json_message(response, server_public_key)
+        if not verified:
+            return {"status": "error"}
+
+        if response["status"] != "success":
+            return {"status": "error"}
+
+        if response["nonce"] != nonce:
+            return {"status": "error"}
+
+        signature = Utils.sign_json_message_with_private_key(
+            response["nonce2"], private_key
         )
-        message["signature"] = signature
 
-        await websocket.send(json.dumps(message))
+        await self.send_json_client_ws({"signature": signature})
 
-        response = await websocket.recv()
-        response_dict = json.loads(response)
+        result = {"status": "success"}
+        if exceepts_answer:
+            result["answer"] = response["answer"]
 
-        if response_dict["nonce"] != message["nonce"]:
-            return None
-
-        verify = self.verify_signature_with_public_key(
-            response_dict["signature"],
-            response_dict["answer"] + response_dict["nonce"] + response_dict["nonce2"],
-            server_public_key,
-        )
-
-        if verify:
-            return response_dict["answer"]
-
-        return None
+        return result
