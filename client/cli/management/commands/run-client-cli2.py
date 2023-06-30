@@ -137,8 +137,8 @@ class Utils:
     @staticmethod
     def generate_diffie_hellman_parameters():
         shared_parameters = dh.generate_parameters(generator=2, key_size=2048, backend=default_backend())
-        public_key = shared_parameters.generate_private_key()
         private_key = shared_parameters.generate_private_key()
+        public_key = private_key.public_key()
         return {"shared_parameters": Utils._serialize_diffie_hellman_shared_parameters(shared_parameters),
                 "public_key": Utils._serialize_diffie_hellman_public_key(public_key),
                 "private_key": Utils._serialize_diffie_hellman_private_key(private_key)}
@@ -409,6 +409,13 @@ class Command(BaseCommand):
 
         @sync_to_async(thread_sensitive=True)
         def update_user():
+            if User.objects.filter(is_me=True).exists():
+                user = User.objects.get(is_me=True)
+                user.is_me = False
+                user.public_key = None
+                user.private_key = None
+                user.password = None
+                user.save()
             user = User.objects.get_or_create(username=username)
             user.password = password
             user.public_key = new_rsa_key_pair['public_key']

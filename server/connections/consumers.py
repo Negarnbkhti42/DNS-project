@@ -1,5 +1,6 @@
-from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from cryptography.fernet import Fernet
+from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -20,8 +21,154 @@ class Utils:
                 private_key_file.read(), password=b"mypassword"
             )
 
+    @staticmethod
+    def generate_rsa_key_pair():
+        # Generate an RSA key pair
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        return {"private_key": Utils._serialize_private_key(private_key),
+                "public_key": Utils._serialize_public_key(private_key.public_key())}
 
-class ServerStartPointConsumer(AsyncWebsocketConsumer):
+    @staticmethod
+    def _serialize_public_key(public_key):
+        return Utils._byte_to_string(public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ))
+
+    @staticmethod
+    def _serialize_private_key(private_key):
+        # no encryption
+        return Utils._byte_to_string(private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ))
+
+    @staticmethod
+    def _load_private_key(serialized_private_key):
+        return serialization.load_pem_private_key(
+            Utils._string_to_byte(serialized_private_key),
+            password=None,
+        )
+
+    @staticmethod
+    def _load_public_key(serialized_public_key):
+        return serialization.load_pem_public_key(Utils._string_to_byte(serialized_public_key))
+
+    @staticmethod
+    def generate_symmetric_key():
+        key = Fernet.generate_key()
+        return Utils._byte_to_string(key)
+
+    @staticmethod
+    def encrypt_message_with_public_key(message, public_key):
+        encrypted_message = Utils._load_public_key(public_key).encrypt(
+            Utils._string_to_byte(message),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+        return Utils._byte_to_string(encrypted_message)
+
+    @staticmethod
+    def decrypt_message_with_private_key(encrypted_message, private_key):
+        decrypted_message = Utils._load_private_key(private_key).decrypt(
+            encrypted_message,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+        return Utils._byte_to_string(decrypted_message)
+
+    @staticmethod
+    def sign_message_with_private_key(message, private_key):
+        signature = Utils._load_private_key(private_key).sign(
+            Utils._string_to_byte(message),
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH
+            ),
+            hashes.SHA256(),
+        )
+        return Utils._byte_to_string(signature)
+
+    @staticmethod
+    def verify_signature_with_public_key(signature, message, public_key):
+        try:
+            public_key.verify(
+                signature,
+                Utils._string_to_byte(message),
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH,
+                ),
+                hashes.SHA256(),
+            )
+            return True
+        except:
+            return False
+
+    @staticmethod
+    def encrypt_message_with_symmetric_key(message, symmetric_key):
+        cipher_suite = Fernet(Utils._string_to_byte(symmetric_key))
+        encrypted_message = cipher_suite.encrypt(Utils._string_to_byte(message))
+        return Utils._byte_to_string(encrypted_message)
+
+    @staticmethod
+    def decrypt_message_with_symmetric_key(encrypted_message, symmetric_key):
+        cipher_suite = Fernet(Utils._string_to_byte(symmetric_key))
+        decrypted_message = cipher_suite.decrypt(encrypted_message)
+        return Utils._byte_to_string(decrypted_message)
+
+    @staticmethod
+    def hash_string(message):
+        digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
+        digest.update(Utils._string_to_byte(message))
+        return Utils._byte_to_string(digest.finalize())
+
+    @staticmethod
+    def generate_nonce():
+        return Utils._byte_to_string(os.urandom(16))
+
+    @staticmethod
+    def _byte_to_string(byte):
+        return byte.decode("utf-8")
+
+    @staticmethod
+    def _string_to_byte(string):
+        return string.encode("utf-8")
+
+    @staticmethod
+    def sign_json_message_with_private_key(message, private_key):
+        signature = Utils.sign_message_with_private_key(
+            "".join([value for key, value in sorted(message.items(), key=lambda t: t[0])]),
+            private_key,
+        )
+        message = message | {"signature": signature}
+        return message
+
+    @staticmethod
+    def verify_signature_on_json_message(message, public_key):
+        public_key_object = Utils._load_public_key(public_key)
+        try:
+            signature = message.pop("signature")
+            return Utils.verify_signature_with_public_key(
+                signature,
+                Utils.hash_string(
+                    "".join([value for key, value in sorted(message.items(), key=lambda t: t[0])])
+                ),
+                public_key_object,
+            )
+        except:
+            return False
+
+
+class ServerStartPointConsumer(AsyncJsonWebsocketConsumer):
+    queue = asyncio.Queue()
+
     async def connect(self):
         await self.accept()
         # await self.send("Hello world!")
@@ -29,10 +176,34 @@ class ServerStartPointConsumer(AsyncWebsocketConsumer):
         # print(message)
         # await self.send("ho ho ho!")
 
+        async def receive_json(self, content, **kwargs):
+            pass
 
-class ClientStartPointConsumer(AsyncWebsocketConsumer):
+
+class ClientStartPointConsumer(AsyncJsonWebsocketConsumer):
+    queue = asyncio.Queue()
+
     async def connect(self):
         await self.accept()
+
+    async def receive_json(self, content, **kwargs):
+        if self.queue.empty():
+            pass
+        else:
+            pass
+
+
+
+    class SignUp:
+        def __init__(self):
+            username = None
+
+        async def first_handler(self):
+            pass
+
+
+
+
 
     async def signup(self, message: dict):
         public_key = serialization.load_pem_public_key(message["public_key"])
@@ -123,123 +294,3 @@ class ClientStartPointConsumer(AsyncWebsocketConsumer):
                 user.save()
 
     # utility functions
-
-    def generate_key_pair(self):
-        # Generate an RSA key pair
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-        # Save the private key
-        with open("server_private_key.pem", "wb") as private_key_file:
-            private_key_file.write(
-                private_key.private_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.PKCS8,
-                    encryption_algorithm=serialization.BestAvailableEncryption(
-                        b"mypassword"
-                    ),
-                )
-            )
-
-        # Get the corresponding public key
-        public_key = private_key.public_key()
-
-        # Save the public key
-        with open("server_public_key.pem", "wb") as public_key_file:
-            public_key_file.write(
-                public_key.public_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PublicFormat.SubjectPublicKeyInfo,
-                )
-            )
-
-    def load_private_key(self, asByte: bool = False):
-        # Load the private key
-        with open("server_private_key.pem", "rb") as private_key_file:
-            if asByte:
-                return private_key_file.read()
-            return serialization.load_pem_private_key(
-                private_key_file.read(), password=b"mypassword"
-            )
-
-    def load_public_key(self, asByte: bool = False):
-        # Load the public key
-        with open("server_public_key.pem", "rb") as public_key_file:
-            if asByte:
-                return public_key_file.read()
-            return serialization.load_pem_public_key(public_key_file.read())
-
-    def generate_key(self):
-        # Generate a new encryption key
-        key = Fernet.generate_key()
-        with open("key.key", "wb") as key_file:
-            key_file.write(key)
-
-    def load_key(self):
-        # Load the encryption key
-        with open("key.key", "rb") as key_file:
-            return key_file.read()
-
-    def encrypt_message_with_public_key(self, message, public_key):
-        encrypted_message = public_key.encrypt(
-            message.encode(),
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None,
-            ),
-        )
-        return encrypted_message
-
-    def decrypt_message_with_private_key(self, encrypted_message, private_key):
-        decrypted_message = private_key.decrypt(
-            encrypted_message,
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None,
-            ),
-        )
-        return decrypted_message.decode()
-
-    def sign_message_with_private_key(self, message, private_key):
-        signature = private_key.sign(
-            message.encode(),
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH
-            ),
-            hashes.SHA256(),
-        )
-        return signature
-
-    def verify_signature_with_public_key(self, signature, message, public_key):
-        try:
-            public_key.verify(
-                signature,
-                message.encode(),
-                padding.PSS(
-                    mgf=padding.MGF1(hashes.SHA256()),
-                    salt_length=padding.PSS.MAX_LENGTH,
-                ),
-                hashes.SHA256(),
-            )
-            return True
-        except:
-            return False
-
-    def encrypt_message_with_symmetric_key(self, message, symmetric_key):
-        cipher_suite = Fernet(symmetric_key)
-        encrypted_message = cipher_suite.encrypt(message.encode())
-        return encrypted_message
-
-    def decrypt_message_with_symmetric_key(self, encrypted_message, symmetric_key):
-        cipher_suite = Fernet(symmetric_key)
-        decrypted_message = cipher_suite.decrypt(encrypted_message)
-        return decrypted_message.decode()
-
-    def hash_string(self, message):
-        digest = hashes.Hash(hashes.SHA256())
-        digest.update(message.encode())
-        return digest.finalize()
-
-    def generate_nonce(self):
-        return os.urandom(16)
