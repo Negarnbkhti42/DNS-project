@@ -16,30 +16,35 @@ from channels.db import database_sync_to_async
 from asgiref.sync import sync_to_async
 
 
-
 class Utils:
     @staticmethod
     def generate_rsa_key_pair():
         # Generate an RSA key pair
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        return {"private_key": Utils._serialize_private_key(private_key),
-                "public_key": Utils._serialize_public_key(private_key.public_key())}
+        return {
+            "private_key": Utils._serialize_private_key(private_key),
+            "public_key": Utils._serialize_public_key(private_key.public_key()),
+        }
 
     @staticmethod
     def _serialize_public_key(public_key):
-        return Utils._byte_to_string(public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        ))
+        return Utils._byte_to_string(
+            public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+        )
 
     @staticmethod
     def _serialize_private_key(private_key):
         # no encryption
-        return Utils._byte_to_string(private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        ))
+        return Utils._byte_to_string(
+            private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+        )
 
     @staticmethod
     def _load_private_key(serialized_private_key):
@@ -50,7 +55,9 @@ class Utils:
 
     @staticmethod
     def _load_public_key(serialized_public_key):
-        return serialization.load_pem_public_key(Utils._string_to_byte(serialized_public_key))
+        return serialization.load_pem_public_key(
+            Utils._string_to_byte(serialized_public_key)
+        )
 
     @staticmethod
     def load_server_public_key():
@@ -137,17 +144,27 @@ class Utils:
 
     @staticmethod
     def generate_diffie_hellman_parameters():
-        shared_parameters = dh.generate_parameters(generator=2, key_size=2048, backend=default_backend())
+        shared_parameters = dh.generate_parameters(
+            generator=2, key_size=2048, backend=default_backend()
+        )
         public_key = shared_parameters.generate_private_key()
         private_key = shared_parameters.generate_private_key()
-        return {"shared_parameters": Utils._serialize_diffie_hellman_shared_parameters(shared_parameters),
-                "public_key": Utils._serialize_diffie_hellman_public_key(public_key),
-                "private_key": Utils._serialize_diffie_hellman_private_key(private_key)}
+        return {
+            "shared_parameters": Utils._serialize_diffie_hellman_shared_parameters(
+                shared_parameters
+            ),
+            "public_key": Utils._serialize_diffie_hellman_public_key(public_key),
+            "private_key": Utils._serialize_diffie_hellman_private_key(private_key),
+        }
 
     @staticmethod
     def _serialize_diffie_hellman_public_key(public_key):
-        return Utils._byte_to_string(public_key.public_bytes(encoding=serialization.Encoding.PEM,
-                                                             format=serialization.PublicFormat.SubjectPublicKeyInfo))
+        return Utils._byte_to_string(
+            public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+        )
 
     @staticmethod
     def _load_diffie_hellman_public_key(public_key):
@@ -155,22 +172,34 @@ class Utils:
 
     @staticmethod
     def _serialize_diffie_hellman_private_key(private_key):
-        return Utils._byte_to_string(private_key.private_bytes(encoding=serialization.Encoding.PEM,
-                                                               format=serialization.PrivateFormat.PKCS8,
-                                                               encryption_algorithm=serialization.NoEncryption()))
+        return Utils._byte_to_string(
+            private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+        )
 
     @staticmethod
     def _load_diffie_hellman_private_key(serialized_private_key):
-        return serialization.load_pem_private_key(Utils._string_to_byte(serialized_private_key), password=None)
+        return serialization.load_pem_private_key(
+            Utils._string_to_byte(serialized_private_key), password=None
+        )
 
     @staticmethod
     def _serialize_diffie_hellman_shared_parameters(shared_parameters):
-        return Utils._byte_to_string(shared_parameters.parameter_bytes(encoding=serialization.Encoding.PEM,
-                                                                       format=serialization.ParameterFormat.PKCS3))
+        return Utils._byte_to_string(
+            shared_parameters.parameter_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.ParameterFormat.PKCS3,
+            )
+        )
 
     @staticmethod
     def _load_diffie_hellman_shared_parameters(serialized_shared_parameters):
-        return serialization.load_pem_parameters(Utils._string_to_byte(serialized_shared_parameters))
+        return serialization.load_pem_parameters(
+            Utils._string_to_byte(serialized_shared_parameters)
+        )
 
     @staticmethod
     def _byte_to_string(byte):
@@ -183,7 +212,9 @@ class Utils:
     @staticmethod
     def sign_json_message_with_private_key(message, private_key):
         signature = Utils.sign_message_with_private_key(
-            "".join([value for key, value in sorted(message.items(), key=lambda t: t[0])]),
+            "".join(
+                [value for key, value in sorted(message.items(), key=lambda t: t[0])]
+            ),
             private_key,
         )
         message = message | {"signature": signature}
@@ -197,7 +228,14 @@ class Utils:
             return Utils.verify_signature_with_public_key(
                 signature,
                 Utils.hash_string(
-                    "".join([value for key, value in sorted(message.items(), key=lambda t: t[0])])
+                    "".join(
+                        [
+                            value
+                            for key, value in sorted(
+                                message.items(), key=lambda t: t[0]
+                            )
+                        ]
+                    )
                 ),
                 public_key_object,
             )
@@ -232,6 +270,7 @@ class Command(BaseCommand):
 
     async def receive_json_client_ws(self):
         return json.loads(await self.client_ws.recv())
+
     async def send_json_server_ws(self, json_data):
         await self.server_ws.send(json.dumps(json_data))
 
@@ -285,7 +324,12 @@ class Command(BaseCommand):
             while True:
                 username = input("Enter your username: ")
                 password = input("Enter your password: ")
-                if username and password and " " not in username and " " not in password:
+                if (
+                    username
+                    and password
+                    and " " not in username
+                    and " " not in password
+                ):
                     result = await self.login(username, password)
                     if result["status"] == "success":
                         self.client_section = "Main Page"
@@ -305,7 +349,12 @@ class Command(BaseCommand):
             while True:
                 username = input("Enter your username: ")
                 password = input("Enter your password: ")
-                if username and password and " " not in username and " " not in password:
+                if (
+                    username
+                    and password
+                    and " " not in username
+                    and " " not in password
+                ):
                     result = await self.signup(username, password)
                     if result["status"] == "success":
                         self.client_section = "Main Page"
@@ -320,43 +369,56 @@ class Command(BaseCommand):
         except KeyboardInterrupt:
             self.client_section = "Pre Login Page"
 
-
-
     async def signup(
         self,
         username: str,
         password: str,
     ):
-        message = {}
-        message["operation"] = "SU"
-        message["username"] = username
+        new_rsa_key_pair = Utils.generate_rsa_key_pair()
+        server_public_key = Utils.load_server_public_key()
 
-        public_key = str(self.load_public_key(asByte=True))
-        message["public_key"] = public_key
-
-        message["encrypted_password"] = self.encrypt_message_with_public_key(
+        encrypted_password = Utils.encrypt_message_with_public_key(
             password, server_public_key
         )
 
-        signature = self.sign_message_with_private_key(
-            self.hash_string(
-                "SU" + username + public_key + message["encrypted_password"]
-            ),
-            self.load_private_key(),
+        m = {
+            "operation": "SU",
+            "username": username,
+            "public_key": new_rsa_key_pair["public_key"],
+            "encrypted_password": encrypted_password,
+        }
+
+        message = Utils.sign_json_message_with_private_key(
+            m, new_rsa_key_pair["private_key"]
         )
 
-        # Send the sign-up request
-        message["signature"] = signature
-        await websocket.send(json.dumps(message))
+        await self.send_json_client_ws(message)
 
-        # Wait for the response
-        response = await websocket.recv()
-        response_dict = json.loads(response)
-        verify = self.verify_signature_with_public_key(
-            response_dict["signature"], response_dict["message"], server_public_key
-        )
+        response = await self.receive_json_client_ws()
 
-        return verify and (response_dict["message"] == username)
+        verified = Utils.verify_signature_on_json_message(response, server_public_key)
+
+        if not verified:
+            return {"status": "error"}
+
+        if response["status"] != "success":
+            return {"status": "error"}
+
+        if response["username"] != username:
+            return {"status": "error"}
+
+        @sync_to_async(thread_sensitive=True)
+        def add_user():
+            user = User.objects.create(
+                username=username,
+                password=password,
+                public_key=new_rsa_key_pair["public_key"],
+                private_key=new_rsa_key_pair["private_key"],
+                is_me=True,
+            )
+            user.save()
+
+        return {"status": "success"}
 
     async def login(
         self,
@@ -369,20 +431,24 @@ class Command(BaseCommand):
         nonce = Utils.generate_nonce()
         m = json.dumps({"nonce": nonce, "password": password})
         encrypted_m = Utils.encrypt_message_with_public_key(m, server_public_key)
-        m2 = {"operation": "NK",
-              "username": username,
-              "public_key": new_rsa_key_pair['public_key'],
-              "encrypted_password_and_nonce": encrypted_m}
-        message = Utils.sign_json_message_with_private_key(m2, new_rsa_key_pair['private_key'])
+        m2 = {
+            "operation": "NK",
+            "username": username,
+            "public_key": new_rsa_key_pair["public_key"],
+            "encrypted_password_and_nonce": encrypted_m,
+        }
+        message = Utils.sign_json_message_with_private_key(
+            m2, new_rsa_key_pair["private_key"]
+        )
         await self.send_json_client_ws(message)
 
         response = await self.receive_json_client_ws()
         verified = Utils.verify_signature_on_json_message(response, server_public_key)
         if not verified:
             return {"status": "error"}
-        nonce_2 = response['nonce']
-        nonce2_2 = response['nonce2']
-        status_2 = response['status']
+        nonce_2 = response["nonce"]
+        nonce2_2 = response["nonce2"]
+        status_2 = response["status"]
         if nonce != nonce_2:
             return {"status": "error"}
         if status_2 == "failed":
@@ -390,23 +456,28 @@ class Command(BaseCommand):
         if status_2 != "success":
             return {"status": "error"}
 
-        m_3 = json.dumps({
-            "password": password,
-            "nonce2": nonce2_2,
-        })
+        m_3 = json.dumps(
+            {
+                "password": password,
+                "nonce2": nonce2_2,
+            }
+        )
 
         m2_3 = Utils.encrypt_message_with_public_key(m_3, server_public_key)
-        message_3 = Utils.sign_json_message_with_private_key(m2_3, new_rsa_key_pair['private_key'])
+        message_3 = Utils.sign_json_message_with_private_key(
+            m2_3, new_rsa_key_pair["private_key"]
+        )
         await self.send_json_client_ws(message_3)
 
         @sync_to_async(thread_sensitive=True)
         def update_user():
             user = User.objects.get_or_create(username=username)
             user.password = password
-            user.public_key = new_rsa_key_pair['public_key']
-            user.private_key = new_rsa_key_pair['private_key']
+            user.public_key = new_rsa_key_pair["public_key"]
+            user.private_key = new_rsa_key_pair["private_key"]
             user.is_me = True
             user.save()
+
         await update_user()
 
         return {"status": "success"}
