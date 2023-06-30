@@ -277,6 +277,14 @@ class Command(BaseCommand):
     async def receive_json_server_ws(self):
         return json.loads(await self.server_ws.recv())
 
+    @database_sync_to_async
+    def get_my_user(self):
+        return User.objects.get(is_me=True)
+
+    @database_sync_to_async
+    def get_user_public_key(self, username):
+        return User.objects.get(username=username).public_key
+
     async def server_start_point(self):
         server_address = self.server_address + "socket-server/"
         async with websockets.connect(server_address) as ws:
@@ -462,8 +470,11 @@ class Command(BaseCommand):
                 "nonce2": nonce2_2,
             }
         )
-
-        m2_3 = Utils.encrypt_message_with_public_key(m_3, server_public_key)
+        m2_3 = {
+            "encrypted_password_and_nonce": Utils.encrypt_message_with_public_key(
+                m_3, server_public_key
+            )
+        }
         message_3 = Utils.sign_json_message_with_private_key(
             m2_3, new_rsa_key_pair["private_key"]
         )
