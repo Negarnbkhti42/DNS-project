@@ -181,15 +181,66 @@ class Utils:
         except:
             return False
 
+    @staticmethod
+    @database_sync_to_async
+    def get_user_public_key(username):
+        return User.objects.get(username=username).public_key
+
+    @staticmethod
+    @database_sync_to_async
+    def get_user_by_username(username):
+        return User.objects.get(username=username)
+
 
 class ServerStartPointConsumer(AsyncJsonWebsocketConsumer):
     queue = asyncio.Queue()
+    username = None
 
     async def connect(self):
         await self.accept()
 
-        async def receive_json(self, content, **kwargs):
+    async def receive_json(self, content, **kwargs):
+        if self.username is None:
+            if "operation" in content:
+                while not self.queue.empty():
+                    await self.queue.get()
+
+                if content["operation"] == "RA":
+                    client_request = ClientRequest(is_go_online=True)
+                    result = await client_request.first_handler(content)
+                    if result["status"] == "success":
+                        await self.queue.put(client_request)
+                        await self.send_json(result)
+            elif not self.queue.empty():
+                obj = await self.queue.get()
+                if isinstance(obj, ClientRequest):
+                    result = await obj.second_handler(content)
+                    if result["status"] == "success":
+                        self.username = obj.username
+                        await self.send_json(result)
+        elif self.queue.empty():
             pass
+        else:
+            pass
+
+    async def disconnect(self, code):
+        user = await Utils.get_user_by_username(self.username)
+        @sync_to_async(thread_sensitive=True)
+        def go_offline():
+            user.online = False
+            user.save()
+        await go_offline()
+
+
+class SeverData:
+    def __int__(self):
+        pass
+
+    async def first_handler(self, message):
+        pass
+
+    async def second_handler(self, message):
+        pass
 
 
 class Login:
@@ -206,12 +257,9 @@ class Login:
             message, message["public_key"]
         )
         if not verified:
-            return Utils.sign_json_message_with_private_key(
-                {
-                    "status": "error",
-                },
-                server_private_key,
-            )
+            return {
+                "status": "error",
+            }
 
         password_and_nonce = json.loads(Utils.decrypt_message_with_private_key(
             message["encrypted_password_and_nonce"], server_private_key
@@ -278,10 +326,146 @@ class Login:
         def login_user():
             user = User.objects.get(username=self.username)
             user.logged_in = True
-            user.online = True
+            user.go_online = False
+            user.public_key = self.public_key
             user.save()
 
         await login_user()
+
+
+class ClientRequest:
+    def __init__(self, is_go_online=False):
+        self.is_go_online = is_go_online
+        self.nonce2 = None
+        self.public_key = None
+        self.username = None
+        self.json_request = None
+
+    async def first_handler(self, message):
+        server_private_key = Utils.load_server_private_key()
+        if "username" not in message \
+                or "request" not in message \
+                or "nonce" not in message \
+                or "signature" not in message:
+            return {
+                "status": "error",
+            }
+
+        self.username = message["username"]
+        self.public_key = await Utils.get_user_public_key(self.username)
+        self.json_request = json.loads(message["request"])
+
+        if self.is_go_online and self.json_request["operation"] != "GO_ONLINE":
+            return {
+                "status": "error",
+            }
+
+        verified = Utils.verify_signature_on_json_message(
+            message, self.public_key
+        )
+
+        if not verified:
+            return {
+                "status": "error",
+            }
+
+        self.nonce2 = Utils.generate_nonce()
+        return Utils.sign_json_message_with_private_key(
+            {
+                "status": "success",
+                "nonce": message["nonce"],
+                "nonce2": self.nonce2,
+            },
+            server_private_key,
+        )
+
+    async def second_handler(self, message):
+        if "nonce2" not in message \
+                or "signature" not in message:
+            return {
+                "status": "error",
+            }
+
+        server_private_key = Utils.load_server_private_key()
+
+        verified = Utils.verify_signature_on_json_message(
+            message, self.public_key
+        )
+
+        if not verified or message["nonce2"] != self.nonce2:
+            return {
+                "status": "error",
+            }
+
+        answer = json.dumps(await self.get_json_answer())
+        return Utils.sign_json_message_with_private_key(
+            {
+                "status": "success",
+                "nonce2": self.nonce2,
+                "answer": Utils.encrypt_message_with_public_key(
+                    answer, self.public_key
+                ),
+            },
+            server_private_key,
+        )
+
+    async def get_json_answer(self):
+        if self.json_request["operation"] == "GO_ONLINE":
+            return await self.go_online()
+        elif self.json_request["operation"] == "LOGOUT":
+            return await self.logout()
+        elif self.json_request["operation"] == "GET_DIFFIE_HELLMAN":
+            return await self.get_diffie_hellman()
+        elif self.json_request["operation"] == "CREATE_GROUP":
+            return await self.create_group()
+        elif self.json_request["operation"] == "UPDATE_GROUP":
+            return await self.update_group()
+        elif self.json_request["operation"] == "SEND_MESSAGE":
+            return await self.send_message()
+        elif self.json_request["operation"] == "SEND_GROUP_MESSAGE":
+            return await self.send_group_message()
+        elif self.json_request["operation"] == "NEW_SESSION":
+            return await self.new_session()
+        else:
+            return {
+                "status": "error",
+            }
+
+    async def go_online(self):
+        pass
+
+    async def logout(self):
+        user = await Utils.get_user_by_username(self.username)
+
+        @sync_to_async(thread_sensitive=True)
+        def logout_user():
+            user.logged_in = False
+            user.online = False
+            user.public_key = None
+            user.diffie_hellman_public_parameters_text = None
+            user.diffie_hellman_public_key_text = None
+            user.save()
+        await logout_user()
+
+        return {"status": "success"}
+
+    async def get_diffie_hellman(self):
+        pass
+
+    async def create_group(self):
+        pass
+
+    async def update_group(self):
+        pass
+
+    async def send_message(self):
+        pass
+
+    async def send_group_message(self):
+        pass
+
+    async def new_session(self):
+        pass
 
 
 class ClientStartPointConsumer(AsyncJsonWebsocketConsumer):
@@ -302,11 +486,21 @@ class ClientStartPointConsumer(AsyncJsonWebsocketConsumer):
                 result = await login.first_handler(content)
                 if result["status"] == "success":
                     await self.queue.put(login)
-                await self.send_json(result)
+                    await self.send_json(result)
+            elif content["operation"] == "RA":
+                client_request = ClientRequest()
+                result = await client_request.first_handler(content)
+                if result["status"] == "success":
+                    await self.queue.put(client_request)
+                    await self.send_json(result)
         elif not self.queue.empty():
             obj = await self.queue.get()
             if isinstance(obj, Login):
                 await obj.second_handler(content)
+            elif isinstance(obj, ClientRequest):
+                result = await obj.second_handler(content)
+                if result["status"] == "success":
+                    await self.send_json(result)
 
     async def sign_up(self, message):
 
@@ -317,9 +511,6 @@ class ClientStartPointConsumer(AsyncJsonWebsocketConsumer):
         )
 
         if not verified:
-            await self.send_json(Utils.sign_json_message_with_private_key(
-                {"status": "error"}, server_private_key
-            ))
             return
 
         @database_sync_to_async
