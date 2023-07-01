@@ -1,3 +1,5 @@
+import base64
+import traceback
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from cryptography.fernet import Fernet
 from cryptography.hazmat.backends import default_backend
@@ -5,8 +7,6 @@ from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric import rsa
 import asyncio
-import websockets
-from websockets.sync.client import connect
 import json
 import os
 from connections.models import *
@@ -19,9 +19,9 @@ class Utils:
     def load_server_private_key():
         # Load the private key
         with open("server_private_key.pem", "rb") as private_key_file:
-            return serialization.load_pem_private_key(
+            return Utils._serialize_private_key(serialization.load_pem_private_key(
                 private_key_file.read(), password=b"mypassword"
-            )
+            ))
 
     @staticmethod
     def generate_rsa_key_pair():
@@ -72,20 +72,20 @@ class Utils:
 
     @staticmethod
     def encrypt_message_with_public_key(message, public_key):
-        encrypted_message = Utils._load_public_key(public_key).encrypt(
+        encrypted_message = base64.b64encode(Utils._load_public_key(public_key).encrypt(
             Utils._string_to_byte(message),
             padding.OAEP(
                 mgf=padding.MGF1(algorithm=hashes.SHA256()),
                 algorithm=hashes.SHA256(),
                 label=None,
             ),
-        )
+        ))
         return Utils._byte_to_string(encrypted_message)
 
     @staticmethod
     def decrypt_message_with_private_key(encrypted_message, private_key):
         decrypted_message = Utils._load_private_key(private_key).decrypt(
-            encrypted_message,
+            base64.b64decode(Utils._string_to_byte(encrypted_message)),
             padding.OAEP(
                 mgf=padding.MGF1(algorithm=hashes.SHA256()),
                 algorithm=hashes.SHA256(),
@@ -96,20 +96,20 @@ class Utils:
 
     @staticmethod
     def sign_message_with_private_key(message, private_key):
-        signature = Utils._load_private_key(private_key).sign(
+        signature = base64.b64encode(Utils._load_private_key(private_key).sign(
             Utils._string_to_byte(message),
             padding.PSS(
                 mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH
             ),
             hashes.SHA256(),
-        )
+        ))
         return Utils._byte_to_string(signature)
 
     @staticmethod
     def verify_signature_with_public_key(signature, message, public_key):
         try:
             public_key.verify(
-                signature,
+                base64.b64decode(Utils._string_to_byte(signature)),
                 Utils._string_to_byte(message),
                 padding.PSS(
                     mgf=padding.MGF1(hashes.SHA256()),
@@ -141,7 +141,7 @@ class Utils:
 
     @staticmethod
     def generate_nonce():
-        return Utils._byte_to_string(os.urandom(16))
+        return os.urandom(16).hex()
 
     @staticmethod
     def _byte_to_string(byte):
@@ -169,15 +169,12 @@ class Utils:
             signature = message.pop("signature")
             return Utils.verify_signature_with_public_key(
                 signature,
-                Utils.hash_string(
-                    "".join(
-                        [
-                            value
-                            for key, value in sorted(
-                                message.items(), key=lambda t: t[0]
-                            )
-                        ]
-                    )
+                "".join(
+                    [
+                        value
+                        for key, value in sorted(
+                        message.items(), key=lambda t: t[0])
+                    ]
                 ),
                 public_key_object,
             )
@@ -190,13 +187,101 @@ class ServerStartPointConsumer(AsyncJsonWebsocketConsumer):
 
     async def connect(self):
         await self.accept()
-        # await self.send("Hello world!")
-        # message = await self.receive()
-        # print(message)
-        # await self.send("ho ho ho!")
 
         async def receive_json(self, content, **kwargs):
             pass
+
+
+class Login:
+    def __init__(self):
+        self.nonce2 = None
+        self.password = None
+        self.public_key = None
+        self.username = None
+
+    async def first_handler(self, message):
+        server_private_key = Utils.load_server_private_key()
+
+        verified = Utils.verify_signature_on_json_message(
+            message, message["public_key"]
+        )
+        if not verified:
+            return Utils.sign_json_message_with_private_key(
+                {
+                    "status": "error",
+                },
+                server_private_key,
+            )
+
+        password_and_nonce = json.loads(Utils.decrypt_message_with_private_key(
+            message["encrypted_password_and_nonce"], server_private_key
+        ))
+        password = password_and_nonce["password"]
+        nonce = password_and_nonce["nonce"]
+
+        @database_sync_to_async
+        def get_user():
+            user = User.objects.get(username=message["username"])
+            if user is None:
+                return None
+
+            if user.password == password:
+                return user
+            return None
+
+        user = await get_user()
+        if user is None:
+            return Utils.sign_json_message_with_private_key(
+                {
+                    "nonce": nonce,
+                    "status": "failed",
+                },
+                server_private_key,
+            )
+
+        nonce2 = Utils.generate_nonce()
+
+        response = Utils.sign_json_message_with_private_key(
+            {
+                "nonce": nonce,
+                "nonce2": nonce2,
+                "status": "success",
+            },
+            server_private_key,
+        )
+
+        self.nonce2 = nonce2
+        self.password = password
+        self.public_key = message["public_key"]
+        self.username = message["username"]
+
+        return response
+
+    async def second_handler(self, message):
+        server_private_key = Utils.load_server_private_key()
+
+        verified = Utils.verify_signature_on_json_message(
+            message, self.public_key
+        )
+        if not verified:
+            return
+
+        password_and_nonce = json.loads(Utils.decrypt_message_with_private_key(
+            message["encrypted_password_and_nonce"], server_private_key
+        ))
+
+        if password_and_nonce["nonce2"] != self.nonce2 \
+                or password_and_nonce["password"] != self.password:
+            return
+
+        @sync_to_async(thread_sensitive=True)
+        def login_user():
+            user = User.objects.get(username=self.username)
+            user.logged_in = True
+            user.online = True
+            user.save()
+
+        await login_user()
 
 
 class ClientStartPointConsumer(AsyncJsonWebsocketConsumer):
@@ -206,200 +291,66 @@ class ClientStartPointConsumer(AsyncJsonWebsocketConsumer):
         await self.accept()
 
     async def receive_json(self, content, **kwargs):
-        if self.queue.empty():
-            pass
-        else:
-            pass
+        if "operation" in content:
+            while not self.queue.empty():
+                await self.queue.get()
 
-    class SignUp:
-        def __init__(self, consumer: AsyncJsonWebsocketConsumer):
-            self.consumer = consumer
+            if content["operation"] == "SU":
+                await self.sign_up(content)
+            elif content["operation"] == "NK":
+                login = Login()
+                result = await login.first_handler(content)
+                if result["status"] == "success":
+                    await self.queue.put(login)
+                await self.send_json(result)
+        elif not self.queue.empty():
+            obj = await self.queue.get()
+            if isinstance(obj, Login):
+                await obj.second_handler(content)
 
-        async def handler(self, message):
-            private_key = Utils.load_server_private_key()
+    async def sign_up(self, message):
 
-            verified = Utils.verify_signature_on_json_message(
-                message, message["public_key"]
-            )
+        server_private_key = Utils.load_server_private_key()
 
-            if not verified:
-                self.consumer.send_json({"status": "error"})
-                return
-
-            @database_sync_to_async
-            def user_exists(username):
-                user = User.objects.get(message["username"])
-                if user == None:
-                    return False
-                return True
-
-            if user_exists(message["username"]):
-                self.consumer.send_json({"status": "error"})
-
-            @sync_to_async(thread_sensitive=True)
-            def add_user():
-                user = User.objects.create(
-                    username=message["username"],
-                    password=Utils.decrypt_message_with_private_key(
-                        message["encrypted_password"], private_key
-                    ),
-                    public_key=message["public_key"],
-                    online=True,
-                    logged_in=True,
-                )
-                user.save()
-
-            add_user()
-
-            m = message["username"]
-            self.consumer.send_json(
-                {
-                    "status": "success",
-                    "username": m,
-                    "signature": Utils.sign_json_message_with_private_key(
-                        m, private_key
-                    ),
-                }
-            )
-
-    class Login:
-        def __init__(self, consumer: AsyncJsonWebsocketConsumer):
-            self.consumer = consumer
-            self.nonce2 = None
-
-        async def first_handler(self, message):
-            private_key = Utils.load_server_private_key()
-
-            verified = Utils.verify_signature_on_json_message(
-                message, message["public_key"]
-            )
-            if not verified:
-                self.consumer.json_send({"status": "error"})
-                return
-
-            password_and_nonce = Utils.decrypt_message_with_private_key(
-                message["encrypted_password_and_nonce"], private_key
-            )
-            password = password_and_nonce["password"]
-            nonce = password_and_nonce["nonce"]
-
-            @database_sync_to_async
-            def user_exists(username, password):
-                return User.objects.get(username=username, password=password)
-
-            user = user_exists(message["username"], password)
-            if user != None:
-                self.consumer.json_send({"status": "error"})
-                return
-
-            @sync_to_async(thread_sensitive=True)
-            def log_user():
-                user.public_key = message["public_key"]
-                user.logged_in = True
-                user.online = True
-                user.save()
-
-            log_user()
-
-            nonce2 = Utils.generate_nonce()
-
-            response = Utils.sign_json_message_with_private_key(
-                {
-                    "nonce": message["nonce"],
-                    "nonce2": nonce2,
-                    "status": "success",
-                },
-                private_key,
-            )
-
-            self.consumer.send_json(response)
-
-    async def signup(self, message: dict):
-        public_key = serialization.load_pem_public_key(message["public_key"])
-
-        if not self.verify_signature_with_public_key(
-            message["signature"],
-            self.hash_string(
-                "SU"
-                + message["username"]
-                + message["public_key"]
-                + message["encrypted_password"]
-            ),
-            public_key,
-        ):
-            return False
-
-        user = User.objects.get(username=message["username"])
-        if user is not None:
-            return "user exists"
-
-        newUser = User(
-            username=message["username"],
-            password=self.decrypt_message_with_private_key(
-                message["encrypted_password"], self.load_private_key
-            ),
-            logged_in=True,
-            online=True,
-        )
-        return message["username"]
-
-    async def login(self, message):
-        public_key = serialization.load_pem_public_key(message["public_key"])
-
-        if not self.verify_signature_with_public_key(
-            message["signature"],
-            self.hash_string(
-                "NK"
-                + message["username"]
-                + message["public_key"]
-                + message["encrypted_password_and_nonce"]
-            ),
-            public_key,
-        ):
-            return False
-
-        password_and_nonce = json.loads(
-            self.decrypt_message_with_private_key(
-                message["encrypted_password_and_nonce"], self.load_private_key()
-            )
-        )
-        password = password_and_nonce["password"]
-        nonce = password_and_nonce["nonce"]
-
-        user = User.objects.get(username=message["username"], password=password)
-        if user is None:
-            return "user doesn't exist"
-
-        nonce2 = self.generate_nonce()
-        signature = self.sign_message_with_private_key(
-            self.hash_string(nonce + nonce2), self.load_private_key()
+        verified = Utils.verify_signature_on_json_message(
+            message, message["public_key"]
         )
 
-        await self.send(
-            json.dumps({"nonce": nonce, "nonce2": nonce2, "signature": signature})
-        )
+        if not verified:
+            await self.send_json(Utils.sign_json_message_with_private_key(
+                {"status": "error"}, server_private_key
+            ))
+            return
 
-        response = await self.receive()
-        response = json.loads(response)
+        @database_sync_to_async
+        def user_exists():
+            return User.objects.filter(username=message["username"]).exists()
 
-        if self.verify_signature_with_public_key(
-            response["signature"],
-            self.hash_string(response["encrypted_password_nonce"]),
-            public_key,
-        ):
-            password_nonce = json.loads(
-                self.decrypt_message_with_private_key(
-                    response["encrypted_password_nonce"], self.load_private_key()
-                )
+        if await user_exists():
+            await self.send_json(Utils.sign_json_message_with_private_key(
+                {"status": "failed"}, server_private_key
+            ))
+            return
+
+        @sync_to_async(thread_sensitive=True)
+        def add_user():
+            user = User.objects.create(
+                username=message["username"],
+                password=Utils.decrypt_message_with_private_key(
+                    message["encrypted_password"], server_private_key
+                ),
+                public_key=message["public_key"],
+                online=True,
+                logged_in=True,
             )
+            user.save()
 
-            password2 = password_nonce["password"]
-            nonce2_repeat = password_nonce["nonce2"]
+        await add_user()
 
-            if (password == password2) and (nonce2_repeat == nonce2):
-                user.logged_in = True
-                user.online = True
-                user.public_key = message["public_key"]
-                user.save()
-
-    # utility functions
+        await self.send_json(Utils.sign_json_message_with_private_key(
+            {
+                "status": "success",
+                "username": message["username"],
+            },
+            server_private_key
+        ))

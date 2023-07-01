@@ -1,5 +1,5 @@
-import sys
-
+import base64
+import traceback
 from cryptography.hazmat.backends import default_backend
 from django.core.management.base import BaseCommand
 from cryptography.fernet import Fernet
@@ -8,7 +8,6 @@ from cryptography.hazmat.primitives.asymmetric import padding, dh
 from cryptography.hazmat.primitives.asymmetric import rsa
 import asyncio
 import websockets
-from websockets.sync.client import connect
 import json
 import os
 from cli.models import *
@@ -62,7 +61,7 @@ class Utils:
     @staticmethod
     def load_server_public_key():
         with open("server_public_key.pem", "rb") as public_key_file:
-            return Utils._byte_to_string(public_key_file.read())
+            return Utils._serialize_public_key(serialization.load_pem_public_key(public_key_file.read()))
 
     @staticmethod
     def generate_symmetric_key():
@@ -71,20 +70,20 @@ class Utils:
 
     @staticmethod
     def encrypt_message_with_public_key(message, public_key):
-        encrypted_message = Utils._load_public_key(public_key).encrypt(
+        encrypted_message = base64.b64encode(Utils._load_public_key(public_key).encrypt(
             Utils._string_to_byte(message),
             padding.OAEP(
                 mgf=padding.MGF1(algorithm=hashes.SHA256()),
                 algorithm=hashes.SHA256(),
                 label=None,
             ),
-        )
+        ))
         return Utils._byte_to_string(encrypted_message)
 
     @staticmethod
     def decrypt_message_with_private_key(encrypted_message, private_key):
         decrypted_message = Utils._load_private_key(private_key).decrypt(
-            encrypted_message,
+            base64.b64decode(Utils._string_to_byte(encrypted_message)),
             padding.OAEP(
                 mgf=padding.MGF1(algorithm=hashes.SHA256()),
                 algorithm=hashes.SHA256(),
@@ -95,20 +94,21 @@ class Utils:
 
     @staticmethod
     def sign_message_with_private_key(message, private_key):
-        signature = Utils._load_private_key(private_key).sign(
+        signature = base64.b64encode(Utils._load_private_key(private_key).sign(
             Utils._string_to_byte(message),
             padding.PSS(
                 mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH
             ),
             hashes.SHA256(),
-        )
+        ))
         return Utils._byte_to_string(signature)
 
     @staticmethod
     def verify_signature_with_public_key(signature, message, public_key):
+
         try:
             public_key.verify(
-                signature,
+                base64.b64decode(Utils._string_to_byte(signature)),
                 Utils._string_to_byte(message),
                 padding.PSS(
                     mgf=padding.MGF1(hashes.SHA256()),
@@ -117,7 +117,8 @@ class Utils:
                 hashes.SHA256(),
             )
             return True
-        except:
+        except Exception as e:
+
             return False
 
     @staticmethod
@@ -140,7 +141,7 @@ class Utils:
 
     @staticmethod
     def generate_nonce():
-        return Utils._byte_to_string(os.urandom(16))
+        return os.urandom(16).hex()
 
     @staticmethod
     def generate_diffie_hellman_parameters():
@@ -218,22 +219,22 @@ class Utils:
     def verify_signature_on_json_message(message, public_key):
         public_key_object = Utils._load_public_key(public_key)
         try:
+
             signature = message.pop("signature")
+
             return Utils.verify_signature_with_public_key(
                 signature,
-                Utils.hash_string(
-                    "".join(
-                        [
-                            value
-                            for key, value in sorted(
-                                message.items(), key=lambda t: t[0]
-                            )
-                        ]
-                    )
+                "".join(
+                    [
+                        value
+                        for key, value in sorted(
+                        message.items(), key=lambda t: t[0])
+                    ]
                 ),
                 public_key_object,
             )
-        except:
+        except Exception as e:
+
             return False
 
 
@@ -299,6 +300,8 @@ class Command(BaseCommand):
                     await self.login_page()
                 elif self.client_section == "Sign Up Page":
                     await self.sign_up_page()
+                elif self.client_section == "Main Page":
+                    await self.main_page()
 
     @database_sync_to_async
     def check_logged_in_section(self):
@@ -309,17 +312,22 @@ class Command(BaseCommand):
             self.client_section = "Pre Login Page"
 
     async def pre_login_page(self):
-        choices = ["Login Page", "Sign Up Page"]
-        options = [str(i + 1) for i in range(len(choices))]
-        while True:
-            print("Choose an option:")
-            for i in range(len(choices)):
-                print("{}. {}".format(i + 1, choices[i]))
-            choice = input("Enter your choice: ")
-            if choice in options:
-                self.client_section = choices[int(choice) - 1]
-            else:
-                print("Invalid choice. Try again.")
+        try:
+            choices = ["Login Page", "Sign Up Page"]
+            options = [str(i + 1) for i in range(len(choices))]
+            while True:
+                print("Choose an option:")
+                for i in range(len(choices)):
+                    print("{}. {}".format(i + 1, choices[i]))
+                choice = input("Enter your choice: ")
+                if choice in options:
+                    self.client_section = choices[int(choice) - 1]
+                    break
+                else:
+                    print("Invalid choice. Try again.")
+        except KeyboardInterrupt:
+            print("\nexit")
+            self.terminate_event.set()
 
     async def login_page(self):
         try:
@@ -327,10 +335,10 @@ class Command(BaseCommand):
                 username = input("Enter your username: ")
                 password = input("Enter your password: ")
                 if (
-                    username
-                    and password
-                    and " " not in username
-                    and " " not in password
+                        username
+                        and password
+                        and " " not in username
+                        and " " not in password
                 ):
                     result = await self.login(username, password)
                     if result["status"] == "success":
@@ -344,6 +352,7 @@ class Command(BaseCommand):
                 else:
                     print("Invalid input. Try again.")
         except KeyboardInterrupt:
+            print()
             self.client_section = "Pre Login Page"
 
     async def sign_up_page(self):
@@ -352,10 +361,10 @@ class Command(BaseCommand):
                 username = input("Enter your username: ")
                 password = input("Enter your password: ")
                 if (
-                    username
-                    and password
-                    and " " not in username
-                    and " " not in password
+                        username
+                        and password
+                        and " " not in username
+                        and " " not in password
                 ):
                     result = await self.signup(username, password)
                     if result["status"] == "success":
@@ -369,16 +378,17 @@ class Command(BaseCommand):
                 else:
                     print("Invalid input. Try again.")
         except KeyboardInterrupt:
+            print()
             self.client_section = "Pre Login Page"
 
-
-
     async def signup(
-        self,
-        username: str,
-        password: str,
+            self,
+            username: str,
+            password: str,
     ):
+
         new_rsa_key_pair = Utils.generate_rsa_key_pair()
+
         server_public_key = Utils.load_server_public_key()
 
         encrypted_password = Utils.encrypt_message_with_public_key(
@@ -405,6 +415,9 @@ class Command(BaseCommand):
         if not verified:
             return {"status": "error"}
 
+        if response["status"] == "failed":
+            return {"status": "failed"}
+
         if response["status"] != "success":
             return {"status": "error"}
 
@@ -412,22 +425,29 @@ class Command(BaseCommand):
             return {"status": "error"}
 
         @sync_to_async(thread_sensitive=True)
-        def add_user():
-            user = User.objects.create(
-                username=username,
-                password=password,
-                public_key=new_rsa_key_pair["public_key"],
-                private_key=new_rsa_key_pair["private_key"],
-                is_me=True,
-            )
+        def update_user():
+            if User.objects.filter(is_me=True).exists():
+                user = User.objects.get(is_me=True)
+                user.is_me = False
+                user.public_key = None
+                user.private_key = None
+                user.password = None
+                user.save()
+            user = User.objects.create(username=username)
+            user.password = password
+            user.public_key = new_rsa_key_pair["public_key"]
+            user.private_key = new_rsa_key_pair["private_key"]
+            user.is_me = True
             user.save()
+
+        await update_user()
 
         return {"status": "success"}
 
     async def login(
-        self,
-        username,
-        password,
+            self,
+            username,
+            password,
     ):
         new_rsa_key_pair = Utils.generate_rsa_key_pair()
         server_public_key = Utils.load_server_public_key()
@@ -447,6 +467,7 @@ class Command(BaseCommand):
         await self.send_json_client_ws(message)
 
         response = await self.receive_json_client_ws()
+
         verified = Utils.verify_signature_on_json_message(response, server_public_key)
         if not verified:
             return {"status": "error"}
@@ -485,7 +506,8 @@ class Command(BaseCommand):
                 user.private_key = None
                 user.password = None
                 user.save()
-            user = User.objects.get_or_create(username=username)
+            user = User.objects.create(username=username)
+
             user.password = password
             user.public_key = new_rsa_key_pair["public_key"]
             user.private_key = new_rsa_key_pair["private_key"]
@@ -535,3 +557,7 @@ class Command(BaseCommand):
             result["answer"] = response["answer"]
 
         return result
+
+    async def main_page(self):
+        while True:
+            input("Press enter to continue...")
