@@ -1,5 +1,5 @@
 import base64
-import traceback
+import sys
 from cryptography.hazmat.backends import default_backend
 from django.core.management.base import BaseCommand
 from cryptography.fernet import Fernet
@@ -301,6 +301,7 @@ class Command(BaseCommand):
                 # await self.go_online()
                 while not self.terminate_event.is_set():
                     # data protocol
+                    await asyncio.sleep(0.4)
                     pass
 
     async def client_start_point(self):
@@ -308,8 +309,11 @@ class Command(BaseCommand):
         async with websockets.connect(server_address) as ws:
             self.client_ws = ws
             while not self.terminate_event.is_set():
+                print("checking section", self.client_section)
                 if self.client_section == "Check Logged In Section":
+                    print("start check logged in section")
                     await self.check_logged_in_section()
+                    print("end check logged in section")
                 elif self.client_section == "Pre Login Page":
                     await self.pre_login_page()
                 elif self.client_section == "Login Page":
@@ -318,6 +322,7 @@ class Command(BaseCommand):
                     await self.sign_up_page()
                 elif self.client_section == "Main Page":
                     await self.main_page()
+            print("Client closed", self.terminate_event.is_set())
 
     @database_sync_to_async
     def check_logged_in_section(self):
@@ -396,17 +401,28 @@ class Command(BaseCommand):
             self.client_section = "Pre Login Page"
 
     async def main_page(self):
-        try:
-            while True:
-                input("Press enter to continue...")
-        except KeyboardInterrupt:
-            print()
-            result = await self.logout()
-            if result["status"] == "success":
-                print("Logged out successfully.")
-                self.client_section = "Pre Login Page"
+        choices = ["Logout", "Show All Users", "Show All Groups", "Chat With User", "Chat In Group",
+                   "Create Group", "My Group Info", "Refresh Public Key"]
+        options = [str(i + 1) for i in range(len(choices))]
+        while True:
+            print("Welcome to the main page.")
+            print("Choose an option:")
+            for i in range(len(choices)):
+                print("{}. {}".format(i + 1, choices[i]))
+            choice = input("Enter your choice: ")
+            if choice in options:
+                if choice == "1":
+                    result = await self.logout()
+                    if result["status"] == "success":
+                        print("Logged out successfully.")
+                        self.client_section = "Pre Login Page"
+                        break
+                    else:
+                        print("Server Error. Try again.")
+                else:
+                    print("Not implemented yet.")
             else:
-                print("Server Error. Try again.")
+                print("Invalid choice. Try again.")
 
     async def go_online(self):
         result = await self.send_json_request({"operation": "GO_ONLINE"}, use_client_ws=False)
@@ -538,14 +554,14 @@ class Command(BaseCommand):
         if not verified:
             return {"status": "error"}
         nonce_2 = response["nonce"]
-        nonce2_2 = response["nonce2"]
-        status_2 = response["status"]
         if nonce != nonce_2:
             return {"status": "error"}
+        status_2 = response["status"]
         if status_2 == "failed":
             return {"status": "failed"}
         if status_2 != "success":
             return {"status": "error"}
+        nonce2_2 = response["nonce2"]
 
         m_3 = json.dumps(
             {
@@ -573,7 +589,6 @@ class Command(BaseCommand):
                 user.password = None
                 user.save()
             user = User.objects.create(username=username)
-
             user.password = password
             user.public_key = new_rsa_key_pair["public_key"]
             user.private_key = new_rsa_key_pair["private_key"]
@@ -598,6 +613,7 @@ class Command(BaseCommand):
 
         message = Utils.sign_json_message_with_private_key(m, private_key)
 
+        sys.stdout.flush()
         response_2 = None
         if use_client_ws:
             await self.send_json_client_ws(message)
@@ -605,6 +621,8 @@ class Command(BaseCommand):
         else:
             await self.send_json_server_ws(message)
             response_2 = await self.receive_json_server_ws()
+
+        sys.stdout.flush()
 
         verified = Utils.verify_signature_on_json_message(response_2, server_public_key)
         if not verified or response_2["nonce"] != nonce or "nonce2" not in response_2:
@@ -614,6 +632,7 @@ class Command(BaseCommand):
             {"nonce2": response_2["nonce2"]}, private_key
         )
 
+        sys.stdout.flush()
         response_4 = None
         if use_client_ws:
             await self.send_json_client_ws(message_3)
@@ -622,6 +641,8 @@ class Command(BaseCommand):
             await self.send_json_server_ws(message_3)
             response_4 = await self.receive_json_server_ws()
 
+        sys.stdout.flush()
+
         verified = Utils.verify_signature_on_json_message(response_4, server_public_key)
         if not verified \
                 or "nonce2" not in response_4 \
@@ -629,4 +650,5 @@ class Command(BaseCommand):
                 or "answer" not in response_4:
             return {"status": "error"}
 
+        sys.stdout.flush()
         return {"status": "success", "answer": response_4["answer"]}

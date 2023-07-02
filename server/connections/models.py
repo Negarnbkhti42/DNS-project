@@ -36,10 +36,10 @@ class PendingMessage(models.Model):
     group = models.ForeignKey(Group, on_delete=models.CASCADE, null=True, default=None)
 
 
-class PendingNewSessionMessage(PendingMessage):
-    diffie_hellman_public_parameters_text = models.TextField()
-    sender_diffie_hellman_public_key_text = models.TextField()
-    receiver_diffie_hellman_public_key_text = models.TextField()
+# class PendingNewSessionMessage(PendingMessage):
+#     diffie_hellman_public_parameters_text = models.TextField()
+#     sender_diffie_hellman_public_key_text = models.TextField()
+#     receiver_diffie_hellman_public_key_text = models.TextField()
 
 
 class PendingAction(models.Model):
@@ -51,9 +51,14 @@ class PendingAction(models.Model):
     )
 
 
-class NewGroupSession(PendingAction):
-    group = models.ForeignKey(Group, on_delete=models.CASCADE)
-    encrypted_session_key = models.TextField()
+class NewSession(PendingAction):
     diffie_hellman_public_parameters_text = models.TextField()
     sender_diffie_hellman_public_key_text = models.TextField()
     receiver_diffie_hellman_public_key_text = models.TextField()
+
+
+class NewGroupSession(NewSession):
+    encrypted_session_key = models.TextField()
+    group = models.ForeignKey(Group, on_delete=models.CASCADE)
+
+

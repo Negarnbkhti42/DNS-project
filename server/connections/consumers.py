@@ -1,5 +1,4 @@
 import base64
-import traceback
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from cryptography.fernet import Fernet
 from cryptography.hazmat.backends import default_backend
@@ -12,6 +11,7 @@ import os
 from connections.models import *
 from channels.db import database_sync_to_async
 from asgiref.sync import sync_to_async
+from django.db.models import Q
 
 
 class Utils:
@@ -192,6 +192,45 @@ class Utils:
         return User.objects.get(username=username)
 
 
+class ServerData:
+    def __init__(self, public_key):
+        self.public_key = public_key
+        self.nonce = Utils.generate_nonce()
+
+    async def first_handler(self, json_data):
+        server_private_key = Utils.load_server_private_key()
+        data = json.dumps(json_data)
+
+        m = {
+            "data": data,
+            "nonce": self.nonce,
+        }
+        return Utils.sign_json_message_with_private_key(m, server_private_key)
+
+    async def second_handler(self, json_response):
+        server_private_key = Utils.load_server_private_key()
+        if "nonce" not in json_response or "nonce2" not in json_response or "signature" not in json_response:
+            return {
+                "status": "error",
+            }
+
+        verified = Utils.verify_signature_on_json_message(json_response, self.public_key)
+        if not verified:
+            return {
+                "status": "error",
+            }
+
+        if json_response["nonce"] != self.nonce:
+            return {
+                "status": "error",
+            }
+
+        return Utils.sign_json_message_with_private_key({
+            "nonce2": json_response["nonce2"],
+            "status": "success"
+        }, server_private_key)
+
+
 class ServerStartPointConsumer(AsyncJsonWebsocketConsumer):
     queue = asyncio.Queue()
     username = None
@@ -218,29 +257,115 @@ class ServerStartPointConsumer(AsyncJsonWebsocketConsumer):
                     if result["status"] == "success":
                         self.username = obj.username
                         await self.send_json(result)
-        elif self.queue.empty():
-            pass
-        else:
-            pass
+        if self.username is not None:
+            if not self.queue.empty():
+                server_data = await self.queue.get()
+                if isinstance(server_data, ServerData):
+                    result = await server_data.second_handler(content)
+                    if result["status"] == "success":
+                        await self.send_json(result)
+
+            await asyncio.sleep(3)
+            server_data = ServerData(await Utils.get_user_public_key(self.username))
+            pending_data = await self.get_all_pending_data()
+            result = await server_data.first_handler(pending_data)
+            await self.queue.put(server_data)
+            await self.send_json(result)
+
+    @sync_to_async(thread_sensitive=True)
+    def get_all_pending_data(self):
+        pending_message = PendingMessage.objects.filter(
+            receiver__username=self.username,
+            group__isnull=True
+        )
+        pending_group_message = PendingMessage.objects.filter(
+            receiver__username=self.username,
+        ).exclude(group__isnull=True)
+        new_session = NewSession.objects.filter(
+            receiver__username=self.username
+        )
+        new_group_session = NewGroupSession.objects.filter(
+            receiver__username=self.username
+        )
+        pending_data = dict()
+        if pending_message:
+            pending_data["pending_message"] = [
+                {
+                    "sender": pending_message.sender.username,
+                    "encrypted_message": pending_message.encrypted_message,
+                }
+                for pending_message in pending_message
+            ]
+        if pending_group_message:
+            pending_data["pending_group_message"] = [
+                {
+                    "sender": pending_group_message.sender.username,
+                    "encrypted_message": pending_group_message.encrypted_message,
+                    "group": pending_group_message.group.name
+                }
+                for pending_group_message in pending_group_message
+            ]
+        if new_session:
+            pending_data["new_session"] = [
+                {
+                    "sender": new_session.sender.username,
+                    "diffie_hellman_public_parameters_text": new_session.diffie_hellman_public_parameters_text,
+                    "sender_diffie_hellman_public_key_text": new_session.sender_diffie_hellman_public_key_text,
+                    "receiver_diffie_hellman_public_key_text": new_session.receiver_diffie_hellman_public_key_text,
+                }
+                for new_session in new_session
+            ]
+        if new_group_session:
+            pending_data["new_group_session"] = [
+                {
+                    "sender": new_group_session.sender.username,
+                    "diffie_hellman_public_parameters_text": new_group_session.diffie_hellman_public_parameters_text,
+                    "sender_diffie_hellman_public_key_text": new_group_session.sender_diffie_hellman_public_key_text,
+                    "receiver_diffie_hellman_public_key_text":
+                        new_group_session.receiver_diffie_hellman_public_key_text,
+                    "encrypted_session_key": new_group_session.encrypted_session_key,
+                    "group": new_group_session.group.name
+                }
+                for new_group_session in new_group_session
+            ]
+        pending_data["users"] = [
+            {
+                "username": user.username,
+                "public_key": user.public_key,
+                "online": user.online,
+                "diffie_hellman_public_parameters_text": user.diffie_hellman_public_parameters_text,
+                "diffie_hellman_public_key_text": user.diffie_hellman_public_key_text,
+            }
+            for user in User.objects.exclude(username=self.username)
+            .filter(public_key__isnull=False)
+            .filter(diffie_hellman_public_parameters_text__isnull=False)
+            .filter(diffie_hellman_public_key_text__isnull=False)
+        ]
+        pending_data["groups"] = [
+            {
+                "name": group.name,
+                "group_admin": group.group_admin.username,
+                "group_members": [
+                    group_member.username
+                    for group_member in group.group_members.all()
+                ],
+            }
+            for group in Group.objects.filter(
+                Q(group_admin__username=self.username) | Q(group_members__username=self.username)
+            )
+        ]
+        return pending_data
 
     async def disconnect(self, code):
-        user = await Utils.get_user_by_username(self.username)
-        @sync_to_async(thread_sensitive=True)
-        def go_offline():
-            user.online = False
-            user.save()
-        await go_offline()
+        if self.username is not None:
+            user = await Utils.get_user_by_username(self.username)
 
+            @sync_to_async(thread_sensitive=True)
+            def go_offline():
+                user.online = False
+                user.save()
 
-class SeverData:
-    def __int__(self):
-        pass
-
-    async def first_handler(self, message):
-        pass
-
-    async def second_handler(self, message):
-        pass
+            await go_offline()
 
 
 class Login:
@@ -269,8 +394,10 @@ class Login:
 
         @database_sync_to_async
         def get_user():
-            user = User.objects.get(username=message["username"])
-            if user is None:
+            user = None
+            try:
+                user = User.objects.get(username=message["username"])
+            except User.DoesNotExist:
                 return None
 
             if user.password == password:
@@ -445,6 +572,7 @@ class ClientRequest:
             user.diffie_hellman_public_parameters_text = None
             user.diffie_hellman_public_key_text = None
             user.save()
+
         await logout_user()
 
         return {"status": "success"}
@@ -486,6 +614,8 @@ class ClientStartPointConsumer(AsyncJsonWebsocketConsumer):
                 result = await login.first_handler(content)
                 if result["status"] == "success":
                     await self.queue.put(login)
+                    await self.send_json(result)
+                elif result["status"] == "failed":
                     await self.send_json(result)
             elif content["operation"] == "RA":
                 client_request = ClientRequest()
