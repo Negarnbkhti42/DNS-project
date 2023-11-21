@@ -33,7 +33,10 @@ class PendingMessage(models.Model):
         default=None,
         related_name="pending_messages_received",
     )
+    public_key = models.TextField()
     group = models.ForeignKey(Group, on_delete=models.CASCADE, null=True, default=None)
+    diffie_hellman_public_parameters_text = models.TextField()
+    diffie_hellman_public_key_text = models.TextField()
 
 
 # class PendingNewSessionMessage(PendingMessage):

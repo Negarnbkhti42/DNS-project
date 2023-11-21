@@ -291,8 +291,11 @@ class ServerStartPointConsumer(AsyncJsonWebsocketConsumer):
         if pending_message:
             pending_data["pending_message"] = [
                 {
-                    "sender": pending_message.sender.username,
+                    "sender_username": pending_message.sender.username,
                     "encrypted_message": pending_message.encrypted_message,
+                    "public_key": pending_message.sender.public_key,
+                    "diffie_hellman_public_parameters_text": pending_message.diffie_hellman_public_parameters_text,
+                    "diffie_hellman_public_key_text": pending_message.diffie_hellman_public_key_text,
                 }
                 for pending_message in pending_message
             ]
@@ -308,7 +311,7 @@ class ServerStartPointConsumer(AsyncJsonWebsocketConsumer):
         if new_session:
             pending_data["new_session"] = [
                 {
-                    "sender": new_session.sender.username,
+                    "sender_username": new_session.sender.username,
                     "diffie_hellman_public_parameters_text": new_session.diffie_hellman_public_parameters_text,
                     "sender_diffie_hellman_public_key_text": new_session.sender_diffie_hellman_public_key_text,
                     "receiver_diffie_hellman_public_key_text": new_session.receiver_diffie_hellman_public_key_text,

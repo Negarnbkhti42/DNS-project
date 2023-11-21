@@ -1,4 +1,5 @@
 import base64
+import datetime
 import sys
 from cryptography.hazmat.backends import default_backend
 from django.core.management.base import BaseCommand
@@ -240,6 +241,31 @@ class Utils:
 
             return False
 
+    @staticmethod
+    def string_to_datetime(string_time):
+        return datetime.datetime.strptime(string_time, "%Y-%m-%d %H:%M:%S.%f")
+
+    @staticmethod
+    def get_now_datetime():
+        return datetime.datetime.now()
+
+    @staticmethod
+    def generate_session_key_with_diffie_hellman_parameters_and_public_key(shared_parameters, public_key):
+        shared_parameters = Utils._load_diffie_hellman_shared_parameters(shared_parameters)
+        public_key = Utils._load_diffie_hellman_public_key(public_key)
+        my_private_key = shared_parameters.generate_private_key()
+        session_key = private_key.exchange(public_key)
+        my_public_key = private_key.public_key()
+        return {
+            "session_key": Utils._serialize_diffie_hellman_session_key(session_key),
+            "my_public_key": Utils._serialize_diffie_hellman_public_key(my_public_key),
+            "my_private_key": Utils._serialize_diffie_hellman_private_key(private_key),
+        }
+
+    @staticmethod
+    def _serialize_diffie_hellman_session_key(session_key):
+        pass
+
 
 class Command(BaseCommand):
     help = "Closes the specified poll for voting"
@@ -298,11 +324,102 @@ class Command(BaseCommand):
             self.server_ws = ws
             action = await self.server_start_point_queue.get()
             if action == "start":
-                # await self.go_online()
+                while True:
+                    response = await self.go_online()
+                    if response["status"] == "success":
+                        break
+                    raise ConnectionClosedError
                 while not self.terminate_event.is_set():
-                    # data protocol
-                    await asyncio.sleep(0.4)
-                    pass
+                    await self.receive_json_server_ws()
+
+    async def receive_server_data(self):
+        server_public_key = await self.receive_json_server_ws()
+        my_private_key = await self.get_my_user().private_key
+        server_data = await self.receive_json_server_ws()
+        if "nonce" not in server_data or "data" not in server_data or "signature" not in server_data:
+            return
+
+        verification = Utils.verify_signature_on_json_message(server_data, server_public_key)
+        if not verification:
+            return
+
+        nonce = server_data["nonce"]
+        json_data = json.loads(server_data["data"])
+
+        nonce2 = Utils.generate_nonce()
+        await self.send_json_server_ws(
+            Utils.sign_json_message_with_private_key(
+                {"nonce": nonce, "nonce2": nonce2}, my_private_key
+            )
+        )
+
+        response_3 = await self.receive_json_server_ws()
+        if "nonce2" not in response_3 or "signature" not in response_3:
+            return
+
+        await self.apply_server_data(json_data)
+
+    @sync_to_async(thread_sensitive=True)
+    def apply_server_data(self, json_data):
+
+        for user in json_data["users"]:
+            user_db = None
+            if User.objects.filter(username=user["username"]).exists():
+                user_db = User.objects.get(username=user["username"])
+            else:
+                user_db = User.objects.create(username=user["username"])
+            user_db.public_key = user["public_key"]
+            user_db.online = user["online"]
+            user_db.diffie_hellman_public_parameters_text = user["diffie_hellman_public_parameters_text"]
+            user_db.diffie_hellman_public_key_text = user["diffie_hellman_public_key_text"]
+            user.save()
+
+        for new_session in json_data["new_session"]:
+            sender_username = new_session["sender_username"]
+            sender = User.objects.get(username=sender_username)
+            diffie_hellman_public_parameters_text = new_session["diffie_hellman_public_parameters_text"]
+            sender_diffie_hellman_public_key_text = new_session["sender_diffie_hellman_public_key_text"]
+            receiver_diffie_hellman_public_key_text = new_session["receiver_diffie_hellman_public_key_text"]
+            diffie_hellman_orm = DiffieHellman.objects.filter(
+                diffie_hellman_public_parameters_text=diffie_hellman_public_parameters_text,
+                diffie_hellman_public_key_text=receiver_diffie_hellman_public_key_text)
+            if not diffie_hellman_orm.exists():
+                continue
+            diffie_hellman = diffie_hellman_orm.first()
+            session_key = Utils.
+
+
+        for message in json_data["pending_message"]:
+            sender_username = message["sender_username"]
+            public_key = message["public_key"]
+            encrypted_message = message["encrypted_message"]
+            diffie_hellman_public_parameters_text = message["diffie_hellman_public_parameters_text"]
+            diffie_hellman_public_key_text = message["diffie_hellman_public_key_text"]
+            sender = User.objects.get(username=sender_username)
+            session_key_orm = sender.session_keys.filter(
+                diffie_hellman__diffie_hellman_public_parameters_text=diffie_hellman_public_parameters_text,
+                diffie_hellman__diffie_hellman_public_key_text=diffie_hellman_public_key_text)
+            if not session_key_orm.exists():
+                continue
+            session_key = session_key_orm.first().session_key
+            decrypted_message = Utils.decrypt_message_with_private_key(encrypted_message, session_key)
+            decrypted_message_json = json.loads(decrypted_message)
+            message_signature = decrypted_message_json["signature"]
+            verified = Utils.verify_signature_on_json_message(decrypted_message_json, public_key)
+            if not verified:
+                continue
+
+            sender = User.objects.get(username=sender_username)
+            message_text = decrypted_message_json["text"]
+            message_datetime = Utils.string_to_datetime(decrypted_message_json["datetime"])
+            Message.objects.create(
+                sender=sender,
+                message=message_text,
+                datetime=message_datetime,
+                signature=message_signature,
+                public_key=public_key,
+            )
+
 
     async def client_start_point(self):
         server_address = self.server_address + "socket-client/"
@@ -425,7 +542,22 @@ class Command(BaseCommand):
                 print("Invalid choice. Try again.")
 
     async def go_online(self):
-        result = await self.send_json_request({"operation": "GO_ONLINE"}, use_client_ws=False)
+        diffie_hellman_params = Utils.generate_diffie_hellman_parameters()
+
+        @sync_to_async(thread_sensitive=True)
+        def save_diffie_hellman_params():
+            DiffieHellman.objects.create(
+                diffie_hellman_private_parameters_text=diffie_hellman_params["private_key"],
+                diffie_hellman_public_parameters_text=diffie_hellman_params["shared_parameters"],
+                diffie_hellman_public_key_text=diffie_hellman_params["public_key"],
+            )
+        await save_diffie_hellman_params()
+
+        result = await self.send_json_request({
+            "operation": "GO_ONLINE",
+            "diffie_hellman_public_parameters_text": diffie_hellman_params["shared_parameters"],
+            "diffie_hellman_public_key_text": diffie_hellman_params["public_key"],
+        }, use_client_ws=False)
         if result["status"] == "success":
             user = await self.get_my_user()
             user.is_online = True

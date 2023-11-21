@@ -4,3 +4,4 @@
 /Pipfile.lock
 /client/cli/migrations/
 /server/connections/migrations/
+**/__pycache__/
